@@ -1,8 +1,10 @@
 # Block 6 — Validation / Stress-Test Corpus
 
-37 scenarios, 163 events. **Not mixed with Block 3 (normal) or Block 4 (attack/control) on
+48 scenarios, 220 events. **Not mixed with Block 3 (normal) or Block 4 (attack/control) on
 disk** — this corpus lives entirely under `data/validation/` and is loaded separately by
-`tests/detections/corpus.js`'s `loadValidationCorpus()`.
+`tests/detections/corpus.js`'s `loadValidationCorpus()`. Includes 11 Track 3 regression fixtures
+(V11-01..V11-11) added in a later remediation pass — see "Track 3 remediation pass" below and
+`docs/validation-report.md`.
 
 **Purpose:** unlike Block 3 (demonstrate normal behavior) and Block 4 (demonstrate the three
 attack classes), this corpus exists to **break the Block 5 detection rules** — adversarial-but-
@@ -26,7 +28,7 @@ Deterministic (fixed clocks, fixed identifiers, same HMAC test key as Block 3/4)
 |---|---|---|
 | `track1/` | V1 (false positives), V2 (evasion illustration) | V1-01…V1-09, V2-01 |
 | `track2/` | V3 (false positives), V4 (evasion documentation) | V3-01…V3-07, V4-01, V4-02 |
-| `track3/` | V5 (false positives/boundary), V6 (evasion documentation) | V5-01…V5-09, V6-01, V6-02 |
+| `track3/` | V5 (false positives/boundary), V6 (evasion documentation), V11 (remediation-pass regression) | V5-01…V5-09, V6-01, V6-02, V11-01…V11-11 |
 | `enrichment/` | V8 (output/token/schema must never independently drive a verdict) | V8-01…V8-05 |
 | `hashing/` | V7 (HMAC key-epoch behavior) | V7-01…V7-03 |
 
@@ -64,6 +66,39 @@ observability boundary), `notes`.
    grace-period or policy-exception field exists in the locked Block 2 schema, so the rules
    correctly (given available telemetry) cannot suppress them. Tuning recommendation:
    deployment-side query constants, not a schema change.
+
+## Track 3 remediation pass (V11-01..V11-11)
+
+A follow-up review found two further genuine SPL code defects (a join-key inconsistency with
+KQL on the expiry/close-suppression joins, and reliance on Splunk's `join` `max=1` default) and
+several JS-oracle discrepancies against the actual KQL/SPL queries. Both are fixed; 11 new
+regression fixtures were added specifically to prove it and to catch a future regression:
+
+- **V11-01**: multiple authorization changes, emitted out of effective_at order — proves every
+  applicable change is considered, not just the first found.
+- **V11-02**: same subscription_id reused by two different principals, one of whom closes their
+  own subscription — proves the close-suppression join correctly requires principal_hash too
+  (this is the fixture that empirically distinguishes the corrected SPL model from the pre-fix
+  buggy one in `tests/validation/language_equivalence.test.js`).
+- **V11-03**: revocation and expiry both applicable to one notification — proves both legs are
+  evaluated independently and unioned, not short-circuited.
+- **V11-04**: silent expiry precedes a later-recorded, future revocation.
+- **V11-05**: revocation with no retained `open` event at all.
+- **V11-06**: a close on a *different* subscription (same principal) must not suppress.
+- **V11-07 / V11-08**: exact-equality boundary conventions on the close side (inclusive) and the
+  expiry-leg invalidation boundary (exclusive), mirroring V5-04/V5-05 for the revocation leg.
+- **V11-09**: scope upgrade plus a not-yet-reached expiry — a clean double-negative.
+- **V11-10**: duplicate/retried close events — proves suppression is a robust "any close at or
+  before" check.
+- **V11-11**: **empirically confirms** the previously-reasoned-only cross-subscription
+  correlation risk is real — a still-valid concurrent subscription's notification mechanically
+  fires because the revocation-leg join cannot disambiguate by subscription. Reported as an
+  unresolved scope boundary, not fixed.
+
+Row-level (not just boolean) assertions for all eleven are in
+`tests/validation/track3_row_regression.test.js`, including two tests that reconstruct the
+pre-fix buggy behavior independently and show it disagrees with the fixed oracle on V11-01 and
+V11-02 — direct evidence the regression suite would catch either bug's reintroduction.
 
 ## Safety
 

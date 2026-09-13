@@ -5,11 +5,11 @@ const { loadUnifiedCorpus, loadValidationCorpus, loadFullStressCorpus } = requir
 const { track1PrimaryFires, track1DiagnosticFires, track2Fires, track3PrimaryFires } = require('../detections/oracle');
 const { evaluate, formatReport } = require('../detections/metrics');
 
-test('Block 6 corpus sanity: 37 scenarios, 163 events, separate from Block 3/4 on disk', () => {
+test('Block 6 corpus sanity: 48 scenarios, 220 events, separate from Block 3/4 on disk', () => {
   const rows = loadValidationCorpus();
-  assert.equal(rows.length, 37);
+  assert.equal(rows.length, 48);
   const totalEvents = rows.reduce((n, r) => n + r.events.length, 0);
-  assert.equal(totalEvents, 163);
+  assert.equal(totalEvents, 220);
   const fs = require('fs');
   const path = require('path');
   const normalDir = path.join(__dirname, '..', '..', 'data', 'normal');
@@ -37,9 +37,9 @@ test('CURATED CORE (Block 3 + Block 4, 31 scenarios): per-track metrics', () => 
   assert.equal(r3.fn, 0); assert.equal(r3.fp, 0);
 });
 
-test('FULL STRESS-TEST CORPUS (Block 3 + 4 + 6, 68 scenarios): per-track metrics -- NOT a real-world performance claim', () => {
+test('FULL STRESS-TEST CORPUS (Block 3 + 4 + 6, 79 scenarios): per-track metrics -- NOT a real-world performance claim', () => {
   const rows = loadFullStressCorpus();
-  assert.equal(rows.length, 68, '31 curated + 37 Block 6 validation scenarios');
+  assert.equal(rows.length, 79, '31 curated + 48 Block 6 validation scenarios');
   const r1 = evaluate(rows, track1PrimaryFires, 'expected1');
   const r2 = evaluate(rows, track2Fires, 'expected2');
   const r3 = evaluate(rows.filter((r) => !r.experimental), track3PrimaryFires, 'expected3');
@@ -109,12 +109,18 @@ test('Track 2 required-behavior spot checks across the full validation corpus', 
 
 test('Track 3 required-behavior spot checks across the full validation corpus', () => {
   const rows = loadValidationCorpus();
-  const mustNotFire = ['V5-01','V5-04','V5-05','V5-06','V6-01'];
+  const mustNotFire = [
+    'V5-01', 'V5-04', 'V5-05', 'V5-06', 'V6-01',
+    'V11-07', 'V11-08', 'V11-09',
+  ];
   for (const id of mustNotFire) {
     const r = rows.find((x) => x.scenario_id === id);
     assert.equal(track3PrimaryFires(r.events), false, `${id} must not fire`);
   }
-  const mustFire = ['V5-07','V6-02'];
+  const mustFire = [
+    'V5-07', 'V6-02',
+    'V11-01', 'V11-02', 'V11-03', 'V11-04', 'V11-05', 'V11-06', 'V11-10', 'V11-11',
+  ];
   for (const id of mustFire) {
     const r = rows.find((x) => x.scenario_id === id);
     assert.equal(track3PrimaryFires(r.events), true, `${id} must fire`);

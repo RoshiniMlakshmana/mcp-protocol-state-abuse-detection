@@ -17,6 +17,14 @@
 // detected_at-only timing (mcp.authz.change.timing_confidence = "detected_only") is
 // deliberately NEVER promoted into the high-confidence result set -- see the separate,
 // clearly-labeled low-confidence/informational section at the bottom.
+//
+// This query is evaluated ROW-WISE: every notification is independently checked against
+// every applicable authoritative change / expiry boundary for the SAME principal (revocation
+// leg) or SAME subscription+principal (expiry leg), and independently checked for a
+// same-subscription-and-principal close at or before it. If a principal has multiple
+// authorization_change events, or multiple notifications, or multiple subscriptions, each
+// combination is evaluated on its own -- this is native to how `join`/`where` operate over
+// whole tables in KQL, not a single-row shortcut.
 
 // BLOCK 6 FIX (docs/validation-report.md, fixture V5-03): only change TYPES that actually
 // invalidate authorization count as a boundary. "scope_upgraded" (a renewal/expansion of
@@ -31,6 +39,18 @@ let AuthoritativeChanges = MCPSecurityAudit
     effective_at = todatetime(['mcp.authz.change.effective_at']),
     change_type = ['mcp.authz.change.type'],
     change_source = ['mcp.authz.change.source'];
+
+// This leg is intentionally scoped by principal_hash ONLY, not also subscription_id:
+// mcp.subscription.authorization_change events carry no subscription id at all (a
+// principal's authorization changes independently of any specific subscription -- Block 1
+// SS5/SS16), so there is nothing to additionally join on here. KNOWN, UNRESOLVED RISK (not
+// fixed -- see detections/README.md "remaining risks"): a principal holding two or more
+// concurrent subscriptions, one revoked and one still legitimately valid, could have the
+// still-valid subscription's notifications incorrectly matched against the other's
+// revocation boundary. Scoping this join by subscription_id as well would remove that risk
+// but would make a notification missing mcp.subscription.id (malformed telemetry) impossible
+// to correlate at all -- there is no subscription-id field on the change event to fall back
+// to. This tradeoff is reported, not silently resolved, per the locked project standard.
 
 let ExpiryBoundaries = MCPSecurityAudit
 | where ['event.name'] == "mcp.subscription.open"
@@ -52,21 +72,30 @@ let Closes = MCPSecurityAudit
 | where ['event.name'] == "mcp.subscription.close"
 | project
     subscription_id = tostring(['mcp.subscription.id']),
+    principal_hash = ['principal.id_hash'],
     close_time = todatetime(['timestamp']);
 
-// Notifications that already have a valid close at or before them -- these must be excluded
-// from every violation leg below (condition #4).
+// FIX (this pass): the close-suppression join now requires BOTH subscription_id AND
+// principal_hash to match, not subscription_id alone. mcp.subscription.id is only a
+// per-connection JSON-RPC request id (Block 1 SS7) and is not guaranteed unique across
+// different principals' connections -- with a subscription_id-only join, one principal's
+// close event could incorrectly suppress a DIFFERENT principal's genuine violation
+// notification that happens to share the same subscription_id string. principal.id_hash is
+// already a required field on mcp.subscription.close (telemetry/schema.md), so this fix uses
+// existing, already-collected telemetry -- it does not invent a new field, and it does not
+// affect the V6-02 malformed-telemetry case (that case is about a notification missing its
+// OWN subscription_id, which is unrelated to how close events are matched).
 let ClosedBeforeNotification = Notifications
-| join kind=leftouter (Closes) on subscription_id
+| join kind=leftouter (Closes) on subscription_id, principal_hash
 | where isnotempty(close_time) and close_time <= notif_time
-| distinct subscription_id, notif_time;
+| distinct subscription_id, principal_hash, notif_time;
 
 // Leg A: authoritative revocation drift (Block 4 A12, A14 -- and A16 correctly produces none,
 // since A16's close precedes its only post-revocation-candidate window).
 let RevocationDrift = Notifications
 | join kind=inner (AuthoritativeChanges) on principal_hash
 | where notif_time > effective_at
-| join kind=leftanti (ClosedBeforeNotification) on subscription_id, notif_time
+| join kind=leftanti (ClosedBeforeNotification) on subscription_id, principal_hash, notif_time
 | extend Confidence = "high", Boundary = "effective_at", BoundaryTime = effective_at,
          AuthzChangeType = change_type, AuthzChangeSource = change_source;
 
@@ -74,10 +103,15 @@ let RevocationDrift = Notifications
 let ExpiryDrift = Notifications
 | join kind=inner (ExpiryBoundaries) on subscription_id, principal_hash
 | where notif_time > valid_until
-| join kind=leftanti (ClosedBeforeNotification) on subscription_id, notif_time
+| join kind=leftanti (ClosedBeforeNotification) on subscription_id, principal_hash, notif_time
 | extend Confidence = "high", Boundary = "valid_until", BoundaryTime = valid_until,
          AuthzChangeType = "expired", AuthzChangeSource = "token_expiry_computed";
 
+// Both legs are UNIONed, not merged into a single filtered row per notification: if a
+// notification is independently a violation under BOTH an authoritative revocation AND a
+// silent expiry (both applicable at once), it correctly produces two rows, one per boundary
+// -- this is deliberate, not a duplicate-elimination bug, since each row documents a
+// distinct, independently sufficient reason the notification is a violation.
 let HighConfidenceDrift = RevocationDrift
 | project subscription_id, principal_hash, notif_time, notification_type, Confidence, Boundary, BoundaryTime, AuthzChangeType, AuthzChangeSource
 | union (ExpiryDrift | project subscription_id, principal_hash, notif_time, notification_type, Confidence, Boundary, BoundaryTime, AuthzChangeType, AuthzChangeSource);
@@ -113,5 +147,5 @@ HighConfidenceDrift
 // Notifications
 // | join kind=inner (DetectedOnlyChanges) on principal_hash
 // | where notif_time > detected_at
-// | join kind=leftanti (ClosedBeforeNotification) on subscription_id, notif_time
+// | join kind=leftanti (ClosedBeforeNotification) on subscription_id, principal_hash, notif_time
 // | extend Confidence = "low", Note = "detected_at-only; true revocation time unknown -- do not treat as a confirmed violation"

@@ -278,9 +278,29 @@ explicitly low-confidence/informational query, never merged into the primary res
   `valid_until` and the system that timestamps notifications.
 
 **Limitations.**
+- **[Scope boundary, NOT fixed]** The revocation-leg join is by `principal.id_hash` only
+  (`authorization_change` events carry no subscription id at all), so a principal holding two or
+  more concurrent subscriptions — one revoked, one still legitimately valid — can have the
+  still-valid subscription's notifications cross-correlated against the other's revocation
+  boundary. Now empirically demonstrated by fixture V11-11
+  (`data/validation/track3/v11_same_principal_cross_subscription_risk.jsonl`) — see
+  `docs/validation-report.md`, "Track 3 remediation pass" / "remaining risks." Not fixable
+  without inventing a subscription-id field on `authorization_change` events that does not exist
+  in the locked telemetry contract, and doing so would reintroduce the malformed-telemetry blind
+  spot (fixture V6-02).
+- **[Code defects, FIXED]** A Track 3 remediation pass found and fixed: (a) SPL's expiry-leg and
+  close-suppression joins previously keyed on `subscription_id` alone, inconsistent with KQL,
+  which could let one principal's close/expiry data affect a different principal's notification
+  when `mcp.subscription.id` values collided; (b) SPL's `join type=inner` subsearches relied on
+  Splunk's `max=1` default, silently dropping additional applicable authorization_change/open
+  events. Both files, and the shared JS test oracle, are now aligned — see
+  `docs/validation-report.md`, "Track 3 remediation pass," and fixtures V11-01/V11-02.
 - **The Sigma correlation cannot faithfully implement this detection** — see
   `detections/sigma/mcp_subscription_drift_correlation.yml`'s description and "Sigma
-  limitations" below. KQL and SPL are the authoritative implementations for Track 3.
+  limitations" below. KQL and SPL are the authoritative implementations for Track 3. "Equivalent"
+  between KQL and SPL means two independently-coded JS models of each language's own written
+  semantics agree row-for-row on the shared test corpus — not native execution against a real
+  backend (still pending; see README.md).
 - Depends on an authorization-server/policy-engine push feed for the `effective_at` path,
   which most real OAuth deployments do not have (`telemetry/schema.md` §5) — this is why the
   `valid_until`/silent-expiry path exists as a fully independent detection leg, not a fallback

@@ -35,6 +35,44 @@ actually invalidate authorization ("revoked", "expired", "scope_downgraded") are
 boundary. "scope_upgraded" (a renewal/expansion of access) is explicitly excluded -- the
 original search ignored change type entirely and false-positived on a legitimate renewal that
 happened to be authoritative.
+
+FIXES APPLIED IN THIS PASS (see docs/validation-report.md for the full write-up):
+  (a) The expiry leg's inner join now requires BOTH subscription_id AND principal_hash to
+      match (it previously joined on subscription_id alone, which was a real inconsistency
+      with the KQL implementation and could, in principle, match a notification to a
+      different principal's open/valid_until on the same subscription_id string).
+      principal_hash is retained through the open-event subsearch specifically so this join
+      can use it.
+  (b) Every SPL `join type=inner` below now explicitly sets `max=0`. Splunk's `join` command
+      defaults to `max=1` -- keeping only the FIRST matching subsearch row per outer-search
+      row -- which would silently drop all but one authorization_change/open event when a
+      principal or subscription has more than one (e.g., an early legitimate renewal followed
+      later by a real revocation, or independently-applicable revocation AND expiry
+      boundaries). `max=0` preserves every applicable match, producing one output row per
+      (notification, applicable boundary) combination, exactly matching KQL's native
+      whole-table join semantics. The aggregated CLOSE joins are left at Splunk's default
+      (max=1 is sufficient there without change) because the close subsearch already
+      collapses to at most one row per (subscription_id, principal_hash) via `stats min(...)`
+      -- there is nothing for max=0 to preserve in that specific subsearch.
+  (c) The close-suppression join now requires BOTH subscription_id AND principal_hash to
+      match (previously subscription_id alone). mcp.subscription.id is only a per-connection
+      JSON-RPC request id (Block 1 SS7) and is not guaranteed unique across different
+      principals' connections -- a subscription_id-only join could let one principal's close
+      event incorrectly suppress a DIFFERENT principal's genuine violation notification that
+      happens to share the same subscription_id string. principal.id_hash is already a
+      required field on mcp.subscription.close (telemetry/schema.md), so this uses existing,
+      already-collected telemetry -- it invents nothing new, and does not affect the
+      malformed-telemetry case a notification missing its OWN subscription_id represents
+      (that case is unrelated to how close events are matched).
+
+KNOWN, UNRESOLVED RISK (NOT fixed in this pass -- see detections/README.md "remaining risks"):
+the revocation leg's join is intentionally scoped by principal_hash ONLY (authorization_change
+events carry no subscription id at all -- there is nothing else to join on). A principal
+holding two or more concurrent subscriptions, one revoked and one still legitimately valid,
+could have the still-valid subscription's notifications incorrectly matched against the
+other's revocation boundary. Scoping this join by subscription_id as well would remove that
+risk but would make a notification missing mcp.subscription.id (malformed telemetry)
+impossible to correlate at all. This tradeoff is reported, not silently resolved.
 ```
 
 `comment("Leg A: authoritative revocation drift (Block 4 A12, A14)")`
@@ -42,7 +80,7 @@ index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscriptio
 | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
     "mcp.subscription.notification_type" as notification_type
 | eval notif_time=_time
-| join type=inner principal_hash
+| join type=inner max=0 principal_hash
     [ search index=mcp_security_audit sourcetype=mcp:audit:json
         "event.name"="mcp.subscription.authorization_change"
         "mcp.authz.change.timing_confidence"="authoritative"
@@ -52,11 +90,11 @@ index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscriptio
       | eval effective_at=strptime('mcp.authz.change.effective_at', "%Y-%m-%dT%H:%M:%S.%3QZ")
       | fields principal_hash effective_at change_type change_source ]
 | where notif_time > effective_at
-| join type=left subscription_id
+| join type=left subscription_id principal_hash
     [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
-      | rename "mcp.subscription.id" as subscription_id
+      | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
       | eval close_time=_time
-      | stats min(close_time) as earliest_close_time by subscription_id ]
+      | stats min(close_time) as earliest_close_time by subscription_id, principal_hash ]
 | where isnull(earliest_close_time) OR earliest_close_time > notif_time
 | eval Boundary="effective_at", BoundaryTime=strftime(effective_at, "%Y-%m-%dT%H:%M:%S.%3QZ")
 | eval Confidence="high"
@@ -68,18 +106,18 @@ index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscriptio
       | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
           "mcp.subscription.notification_type" as notification_type
       | eval notif_time=_time
-      | join type=inner subscription_id
+      | join type=inner max=0 subscription_id principal_hash
           [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.open"
               "mcp.authz.valid_until"=*
-            | rename "mcp.subscription.id" as subscription_id
+            | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
             | eval valid_until=strptime('mcp.authz.valid_until', "%Y-%m-%dT%H:%M:%S.%3QZ")
-            | fields subscription_id valid_until ]
+            | fields subscription_id principal_hash valid_until ]
       | where notif_time > valid_until
-      | join type=left subscription_id
+      | join type=left subscription_id principal_hash
           [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
-            | rename "mcp.subscription.id" as subscription_id
+            | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
             | eval close_time=_time
-            | stats min(close_time) as earliest_close_time by subscription_id ]
+            | stats min(close_time) as earliest_close_time by subscription_id, principal_hash ]
       | where isnull(earliest_close_time) OR earliest_close_time > notif_time
       | eval Boundary="valid_until", BoundaryTime=strftime(valid_until, "%Y-%m-%dT%H:%M:%S.%3QZ")
       | eval change_type="expired", change_source="token_expiry_computed", Confidence="high"
@@ -101,7 +139,7 @@ index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscriptio
 | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
     "mcp.subscription.notification_type" as notification_type
 | eval notif_time=_time
-| join type=inner principal_hash
+| join type=inner max=0 principal_hash
     [ search index=mcp_security_audit sourcetype=mcp:audit:json
         "event.name"="mcp.subscription.authorization_change"
         "mcp.authz.change.timing_confidence"="detected_only"
@@ -110,11 +148,11 @@ index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscriptio
       | eval detected_at=strptime('mcp.authz.change.detected_at', "%Y-%m-%dT%H:%M:%S.%3QZ")
       | fields principal_hash detected_at ]
 | where notif_time > detected_at
-| join type=left subscription_id
+| join type=left subscription_id principal_hash
     [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
-      | rename "mcp.subscription.id" as subscription_id
+      | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
       | eval close_time=_time
-      | stats min(close_time) as earliest_close_time by subscription_id ]
+      | stats min(close_time) as earliest_close_time by subscription_id, principal_hash ]
 | where isnull(earliest_close_time) OR earliest_close_time > notif_time
 | eval Confidence="low"
 | eval Note="detected_at-only; true revocation time unknown -- do not treat as a confirmed violation"

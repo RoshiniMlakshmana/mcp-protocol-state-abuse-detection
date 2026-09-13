@@ -871,6 +871,294 @@ function t3_v6_subscriptionIdMissingOnNotification() {
 }
 
 // ===========================================================================
+// TRACK 3 -- V11 regression fixtures (Track 3 remediation pass: SPL join-key/max=0 fixes,
+// close-suppression principal-scoping fix, and oracle multi-boundary/independent-leg fixes --
+// see docs/validation-report.md for the full write-up). Each fixture targets one specific
+// discrepancy identified between the written KQL/SPL queries and the previous test oracle, or
+// one specific regression scenario requested for this pass.
+// ===========================================================================
+
+function t3_v11_multipleChangesOutOfOrder() {
+  const file = 'track3/v11_multiple_changes_out_of_order.jsonl';
+  const clock = new Clock('2026-10-01T17:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-01');
+  sub(evts, clock, ctx, { subId: '10001', principalHash: p, validUntil: '2026-10-01T20:00:00.000Z' });
+  clock.t = Date.parse('2026-10-01T17:05:00.000Z');
+  // Change A is EMITTED FIRST in the file but carries a LATER (further future) effective_at.
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T18:00:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-01T17:10:00.000Z');
+  // Change B is EMITTED SECOND in the file but carries an EARLIER effective_at than change A.
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T17:07:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-01T17:30:00.000Z');
+  // Between B's effective_at (17:07) and A's effective_at (18:00): must fire against B only.
+  notify(evts, clock, ctx, { subId: '10001', principalHash: p, uriHash: hmacHash('resource:v11-01-a') });
+  clock.t = Date.parse('2026-10-01T18:30:00.000Z');
+  // After BOTH boundaries: must fire against BOTH A and B (two independent rows).
+  notify(evts, clock, ctx, { subId: '10001', principalHash: p, uriHash: hmacHash('resource:v11-01-b') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-01', file,
+    purpose: 'REGRESSION (this pass): two authorization_change events for the same principal, EMITTED out of effective_at order (the change with the later/future effective_at appears FIRST in the event stream). Proves the correlation logic considers every applicable change by its field value, not by stream/array position or by taking only the first match found -- an oracle using `.find()` instead of iterating all matches could silently pick the wrong (or only one) boundary.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false,
+    telemetry_limitation: null,
+    notes: 'See tests/validation/track3_row_regression.test.js for the exact expected alert-row set (1 row for the first notification, 2 rows for the second).'
+  });
+}
+
+function t3_v11_sameSubIdDifferentPrincipals() {
+  const file = 'track3/v11_same_subid_different_principals.jsonl';
+  const clock = new Clock('2026-10-01T17:35:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const pA = hmacHash('principal:alice-v11-02');
+  const pB = hmacHash('principal:bob-v11-02');
+  // mcp.subscription.id is only a per-connection JSON-RPC request id (Block 1 SS7) -- it is not
+  // guaranteed globally unique, so two different principals' independent connections can
+  // legitimately reuse the same subscription_id string.
+  sub(evts, clock, ctx, { subId: '10002', principalHash: pA, validUntil: '2026-10-01T20:00:00.000Z' });
+  clock.t = Date.parse('2026-10-01T17:40:00.000Z');
+  sub(evts, clock, ctx, { subId: '10002', principalHash: pB, validUntil: '2026-10-01T20:00:00.000Z' });
+  clock.t = Date.parse('2026-10-01T17:45:00.000Z');
+  change(evts, clock, ctx, { principalHash: pA, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' }); // Alice ONLY
+  clock.t = Date.parse('2026-10-01T17:50:00.000Z');
+  notify(evts, clock, ctx, { subId: '10002', principalHash: pB, uriHash: hmacHash('resource:v11-02-bob') }); // Bob, unrevoked, same subId string
+  clock.t = Date.parse('2026-10-01T17:52:00.000Z');
+  closeSub(evts, clock, ctx, { subId: '10002', principalHash: pB, reason: 'client_disconnect' }); // Bob closes HIS OWN subscription
+  clock.t = Date.parse('2026-10-01T17:55:00.000Z');
+  // Alice's post-revocation notification arrives AFTER Bob's close, sharing the same
+  // subscription_id string. Under a subscription_id-ONLY close-suppression join (the pre-fix
+  // bug), Bob's close would incorrectly suppress this genuine violation of Alice's. Under the
+  // corrected subscription_id+principal_hash join, it must not.
+  notify(evts, clock, ctx, { subId: '10002', principalHash: pA, uriHash: hmacHash('resource:v11-02-alice') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-02', file,
+    purpose: 'REGRESSION (this pass): two different principals independently reuse the identical subscription_id string ("10002") on separate connections. Only Alice is revoked, and Bob later closes his OWN subscription (same subId string) before Alice\'s genuine post-revocation notification arrives. Proves BOTH (a) the revocation-leg join (principal_hash only) correctly fires on Alice\'s notification and not Bob\'s, and (b) the close-suppression join (subscription_id AND principal_hash) correctly does NOT let Bob\'s close suppress Alice\'s violation just because they share a subscription_id string -- the specific defect this pass\'s close-join fix addresses.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false,
+    telemetry_limitation: null,
+    notes: 'Fires because of Alice\'s notification only -- see tests/validation/track3_row_regression.test.js for the exact row (Bob\'s notification must produce zero rows).'
+  });
+}
+
+function t3_v11_revocationAndExpiryBothApply() {
+  const file = 'track3/v11_revocation_and_expiry_both_apply.jsonl';
+  const clock = new Clock('2026-10-01T18:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-03');
+  sub(evts, clock, ctx, { subId: '10003', principalHash: p, validUntil: '2026-10-01T18:10:00.000Z' });
+  clock.t = Date.parse('2026-10-01T18:05:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T18:03:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-01T18:20:00.000Z'); // after BOTH valid_until (18:10) and effective_at (18:03)
+  notify(evts, clock, ctx, { subId: '10003', principalHash: p, uriHash: hmacHash('resource:v11-03') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-03', file,
+    purpose: 'REGRESSION (this pass): a single notification is independently a violation under BOTH an authoritative revocation (effective_at=18:03) AND a silent expiry (valid_until=18:10). The previous oracle was an if/else-if chain that stopped at the first non-empty leg; the real KQL/SPL queries `union`/`append` both legs unconditionally, so this must produce TWO independent alert rows for the one notification, not one.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false,
+    telemetry_limitation: null,
+    notes: 'See tests/validation/track3_row_regression.test.js for the exact 2-row expectation.'
+  });
+}
+
+function t3_v11_expiryBeforeFutureRevocation() {
+  const file = 'track3/v11_expiry_before_future_revocation.jsonl';
+  const clock = new Clock('2026-10-01T18:30:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-04');
+  sub(evts, clock, ctx, { subId: '10004', principalHash: p, validUntil: '2026-10-01T18:35:00.000Z' }); // expires EARLY
+  clock.t = Date.parse('2026-10-01T18:36:00.000Z'); // after expiry, before any revocation exists
+  notify(evts, clock, ctx, { subId: '10004', principalHash: p, uriHash: hmacHash('resource:v11-04-a') });
+  clock.t = Date.parse('2026-10-01T18:40:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T18:45:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative' }); // FUTURE relative to N1
+  clock.t = Date.parse('2026-10-01T18:50:00.000Z'); // after BOTH boundaries now
+  notify(evts, clock, ctx, { subId: '10004', principalHash: p, uriHash: hmacHash('resource:v11-04-b') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-04', file,
+    purpose: 'REGRESSION (this pass): the silent expiry boundary (18:35) is chronologically EARLIER than a revocation that is only recorded later and takes effect afterward (effective_at=18:45). The first notification (18:36) is already a silent-expiry violation before any revocation event exists at all; the second (18:50) is a violation under both. Proves the expiry leg does not wait for, or get confused by, a later-appearing revocation.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false,
+    telemetry_limitation: null,
+    notes: 'See tests/validation/track3_row_regression.test.js for the exact per-notification row counts (1, then 2).'
+  });
+}
+
+function t3_v11_revocationNoRetainedOpenEvent() {
+  const file = 'track3/v11_revocation_no_open_event.jsonl';
+  const clock = new Clock('2026-10-01T19:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-05');
+  // No mcp.subscription.open event at all (e.g. dropped by log retention, or the subscription
+  // predates the audit pipeline's deployment) -- only the change and notification remain.
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-01T19:05:00.000Z');
+  notify(evts, clock, ctx, { subId: '10005', principalHash: p, uriHash: hmacHash('resource:v11-05') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-05', file,
+    purpose: 'REGRESSION (this pass): the revocation-leg join (principal_hash only) must not require an mcp.subscription.open event to exist at all -- this fixture has NONE. The real KQL/SPL revocation leg never references the Notifications-vs-Opens relationship, only Notifications-vs-AuthoritativeChanges by principal, so this must still fire. The previous oracle bailed out entirely to not_applicable whenever no open event existed, which was stricter than the real query and would have produced a false negative here.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false,
+    telemetry_limitation: null,
+    notes: null
+  });
+}
+
+function t3_v11_closeOnOtherSubscription() {
+  const file = 'track3/v11_close_on_other_subscription.jsonl';
+  const clock = new Clock('2026-10-01T19:15:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-06');
+  sub(evts, clock, ctx, { subId: '10006', principalHash: p, validUntil: '2026-10-01T21:00:00.000Z' }); // subscription A -- stays open
+  clock.t = Date.parse('2026-10-01T19:16:00.000Z');
+  sub(evts, clock, ctx, { subId: '10007', principalHash: p, validUntil: '2026-10-01T21:00:00.000Z' }); // subscription B -- same principal, different id
+  clock.t = Date.parse('2026-10-01T19:20:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-01T19:22:00.000Z');
+  closeSub(evts, clock, ctx, { subId: '10007', principalHash: p, reason: 'client_disconnect' }); // closes B, NOT A
+  clock.t = Date.parse('2026-10-01T19:25:00.000Z');
+  notify(evts, clock, ctx, { subId: '10006', principalHash: p, uriHash: hmacHash('resource:v11-06') }); // A's notification continues
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-06', file,
+    purpose: 'REGRESSION (this pass): the same principal holds two subscriptions; one (B) is closed, the other (A) is not. A\'s post-revocation notification must still fire -- B\'s close must not suppress it. Confirms close-suppression is correctly scoped by subscription_id (not just principal_hash) in the direction opposite to the V11-02/close-suppression fix above.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false,
+    telemetry_limitation: null,
+    notes: null
+  });
+}
+
+function t3_v11_closeExactlyAtNotification() {
+  const file = 'track3/v11_close_exactly_at_notification.jsonl';
+  const clock = new Clock('2026-10-01T19:30:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-07');
+  sub(evts, clock, ctx, { subId: '10008', principalHash: p, validUntil: '2026-10-01T21:00:00.000Z' });
+  clock.t = Date.parse('2026-10-01T19:35:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-01T19:40:00.000Z');
+  closeSub(evts, clock, ctx, { subId: '10008', principalHash: p, reason: 'server_forced_authz' });
+  // Notification's OWN timestamp is exactly equal to the close's timestamp (not the close
+  // preceding it by any margin, and not strictly after).
+  notify(evts, clock, ctx, { subId: '10008', principalHash: p, uriHash: hmacHash('resource:v11-07') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-07', file,
+    purpose: 'REGRESSION (this pass) / boundary-equality: the close event\'s timestamp exactly equals the notification\'s timestamp. Per the query convention (`close_time <= notif_time` suppresses), this notification must be suppressed -- documents the inclusive convention on the close side, contrasting with the exclusive convention on the invalidation-boundary side (V5-05/V11-08).',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: true, evasion_test: false,
+    telemetry_limitation: null,
+    notes: 'Mirrors V5-05\'s exclusive-boundary convention on the notification side; this fixture documents the inclusive convention on the close side.'
+  });
+}
+
+function t3_v11_notificationEqualsValidUntil() {
+  const file = 'track3/v11_notification_equals_valid_until.jsonl';
+  const clock = new Clock('2026-10-01T19:45:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-08');
+  sub(evts, clock, ctx, { subId: '10009', principalHash: p, validUntil: '2026-10-01T20:00:00.000Z' });
+  clock.t = Date.parse('2026-10-01T20:00:00.000Z'); // notification timestamp EXACTLY equals valid_until
+  notify(evts, clock, ctx, { subId: '10009', principalHash: p, uriHash: hmacHash('resource:v11-08') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-08', file,
+    purpose: 'REGRESSION (this pass) / boundary-equality, EXPIRY-LEG variant of V5-05 (which only exercised the revocation leg): notification timestamp exactly equals valid_until, not strictly after. Must not fire -- confirms the exclusive-boundary convention applies identically to the expiry leg.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: true, evasion_test: false,
+    telemetry_limitation: null,
+    notes: null
+  });
+}
+
+function t3_v11_scopeUpgradeNoInvalidation() {
+  const file = 'track3/v11_scope_upgrade_no_invalidation.jsonl';
+  const clock = new Clock('2026-10-01T20:05:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-09');
+  sub(evts, clock, ctx, { subId: '10010', principalHash: p, validUntil: '2026-10-01T23:00:00.000Z' }); // far future, not yet reached
+  clock.t = Date.parse('2026-10-01T20:10:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_upgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-01T20:15:00.000Z');
+  notify(evts, clock, ctx, { subId: '10010', principalHash: p, uriHash: hmacHash('resource:v11-09') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-09', file,
+    purpose: 'REGRESSION (this pass), companion to V5-03: an authoritative scope_upgraded event (renewal, non-invalidating) exists, and the subscription\'s own valid_until has not yet been reached either -- a clean double-negative confirming scope_upgraded never leaks into either leg.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: true, evasion_test: false,
+    telemetry_limitation: null,
+    notes: null
+  });
+}
+
+function t3_v11_multipleCloseEvents() {
+  const file = 'track3/v11_multiple_close_events.jsonl';
+  const clock = new Clock('2026-10-01T20:20:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-10');
+  sub(evts, clock, ctx, { subId: '10011', principalHash: p, validUntil: '2026-10-01T23:00:00.000Z' });
+  clock.t = Date.parse('2026-10-01T20:25:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-01T20:27:00.000Z'); // after revocation, BEFORE either close -- must fire
+  notify(evts, clock, ctx, { subId: '10011', principalHash: p, uriHash: hmacHash('resource:v11-10-a') });
+  clock.t = Date.parse('2026-10-01T20:30:00.000Z');
+  closeSub(evts, clock, ctx, { subId: '10011', principalHash: p, reason: 'server_forced_authz' }); // duplicate close #1 (retry)
+  closeSub(evts, clock, ctx, { subId: '10011', principalHash: p, reason: 'server_forced_authz' }); // duplicate close #2, identical timestamp
+  clock.t = Date.parse('2026-10-01T20:35:00.000Z'); // after both (duplicate) closes -- must be suppressed
+  notify(evts, clock, ctx, { subId: '10011', principalHash: p, uriHash: hmacHash('resource:v11-10-b') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-10', file,
+    purpose: 'REGRESSION (this pass): two duplicate/retried close events for the same subscription+principal, at the same timestamp. The first notification (before either close) must fire; the second (after both) must be suppressed. Proves multiple close rows are correctly reduced via an "any close at or before" (`.some`)/earliest-close-time semantic, not accidentally short-circuited or double-counted.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false,
+    telemetry_limitation: null,
+    notes: 'See tests/validation/track3_row_regression.test.js: exactly one row expected (the first notification only).'
+  });
+}
+
+function t3_v11_samePrincipalCrossSubscriptionRisk() {
+  const file = 'track3/v11_same_principal_cross_subscription_risk.jsonl';
+  const clock = new Clock('2026-10-01T20:40:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v11-11');
+  sub(evts, clock, ctx, { subId: '10012', principalHash: p, validUntil: '2026-10-01T23:00:00.000Z' }); // subscription A -- the one actually revoked (hypothetical ground truth)
+  clock.t = Date.parse('2026-10-01T20:41:00.000Z');
+  sub(evts, clock, ctx, { subId: '10013', principalHash: p, validUntil: '2026-10-01T23:00:00.000Z' }); // subscription B -- a SEPARATE, still-legitimately-valid concurrent subscription
+  clock.t = Date.parse('2026-10-01T20:45:00.000Z');
+  // The change event carries NO subscription id at all (Block 1 SS5/SS16) -- there is no way,
+  // from telemetry alone, to know this was meant to apply only to subscription A.
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-01T20:50:00.000Z');
+  notify(evts, clock, ctx, { subId: '10013', principalHash: p, uriHash: hmacHash('resource:v11-11') }); // subscription B, still legitimately valid
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V11-11', file,
+    purpose: 'KNOWN, DOCUMENTED, UNRESOLVED RISK (explicitly NOT fixed in this pass -- see docs/validation-report.md "remaining risks" and the comments in detections/kql/mcp_subscription_authorization_drift.kql / detections/spl/...spl / tests/attack/track3util.js): a principal holds two concurrent subscriptions. A revocation event (principal-scoped, no subscription id available at all) is emitted. Subscription B\'s notification, though still legitimately valid in this fixture\'s hypothetical ground truth, MECHANICALLY fires because the revocation-leg join can only scope by principal_hash -- there is no subscription-id field on authorization_change events to narrow it further. This is reported as an unresolved scope boundary, not silently fixed by inventing a field or a grace period.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: true,
+    telemetry_limitation: 'Classification: DETECTABLE only in the narrow, mechanical sense that the rule fires on subscription B\'s notification -- whether that fire is a TRUE or FALSE positive is UNRESOLVED given current telemetry (unlike a clean NOT DETECTABLE or PARTIALLY DETECTABLE case). mcp.subscription.authorization_change carries no subscription id, so a principal with multiple concurrent subscriptions cannot be disambiguated at the revocation-leg join. Tightening the join to also require subscription_id would eliminate this risk but would reintroduce the V6-02 blind spot (a notification missing its own subscription_id would no longer correlate to a revocation at all). Not classified as false_positive_test because, absent ground truth in real deployments, whether this is actually benign is unknowable from telemetry alone -- unlike V5-02/V5-09, this is not a provably-benign accepted tradeoff.',
+    notes: 'This is the "same-principal cross-subscription correlation risk" explicitly called out in the Track 3 remediation instructions; kept unresolved by design.'
+  });
+}
+
+// ===========================================================================
 // ENRICHMENT -- V8
 // ===========================================================================
 
@@ -1107,6 +1395,18 @@ t3_largeDetectedEffectiveGap();
 t3_policyPermitsOpenStreams();
 t3_v6_noInvalidityEvidenceAtAll();
 t3_v6_subscriptionIdMissingOnNotification();
+
+t3_v11_multipleChangesOutOfOrder();
+t3_v11_sameSubIdDifferentPrincipals();
+t3_v11_revocationAndExpiryBothApply();
+t3_v11_expiryBeforeFutureRevocation();
+t3_v11_revocationNoRetainedOpenEvent();
+t3_v11_closeOnOtherSubscription();
+t3_v11_closeExactlyAtNotification();
+t3_v11_notificationEqualsValidUntil();
+t3_v11_scopeUpgradeNoInvalidation();
+t3_v11_multipleCloseEvents();
+t3_v11_samePrincipalCrossSubscriptionRisk();
 
 e_tinyMaliciousMismatch();
 e_hugeLegitimateResult();

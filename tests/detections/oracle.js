@@ -10,7 +10,7 @@
  * Each function below is annotated with the exact rule file(s) it mirrors. Track 3 reuses
  * tests/attack/track3util.js unchanged, rather than re-deriving the same logic a third time.
  */
-const { computeTrack3Verdict } = require('../attack/track3util');
+const { computeTrack3Verdict, computeTrack3AlertRows } = require('../attack/track3util');
 
 /**
  * Mirrors: detections/sigma/mcp_task_routing_desynchronization.yml (condition:
@@ -64,6 +64,16 @@ function track3PrimaryFires(events) {
 }
 
 /**
+ * Row-level accessor for tests that need to compare actual alert rows (subscription_id,
+ * principal_hash, notif_time, boundary, ...), not just a collapsed boolean -- required whenever
+ * a fixture has more than one notification, boundary, or principal, since track3PrimaryFires
+ * necessarily discards which/how-many rows fired.
+ */
+function track3PrimaryAlertRows(events) {
+  return computeTrack3AlertRows(events).filter((r) => r.confidence === 'high');
+}
+
+/**
  * Mirrors: the Sigma correlation's ACTUAL (non-faithful, documented-limited) behavior --
  * temporal_ordered(authorization_change[authoritative] -> notification) grouped by
  * principal.id_hash, with NO check for an intervening close and NO expiry-only leg. Used only
@@ -84,5 +94,5 @@ function track3SigmaCorrelationFires(events) {
 }
 
 module.exports = {
-  track1PrimaryFires, track1DiagnosticFires, track2Fires, track3PrimaryFires, track3SigmaCorrelationFires
+  track1PrimaryFires, track1DiagnosticFires, track2Fires, track3PrimaryFires, track3PrimaryAlertRows, track3SigmaCorrelationFires
 };

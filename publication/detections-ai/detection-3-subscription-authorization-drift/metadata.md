@@ -88,24 +88,29 @@ let Closes = MCPSecurityAudit
 | where ['event.name'] == "mcp.subscription.close"
 | project
     subscription_id = tostring(['mcp.subscription.id']),
+    principal_hash = ['principal.id_hash'],
     close_time = todatetime(['timestamp']);
 
+// FIX (Track 3 remediation pass): joins on BOTH subscription_id AND principal_hash, not
+// subscription_id alone -- mcp.subscription.id is only a per-connection JSON-RPC id and is not
+// guaranteed unique across different principals' connections. principal.id_hash is already a
+// required field on mcp.subscription.close (telemetry/schema.md).
 let ClosedBeforeNotification = Notifications
-| join kind=leftouter (Closes) on subscription_id
+| join kind=leftouter (Closes) on subscription_id, principal_hash
 | where isnotempty(close_time) and close_time <= notif_time
-| distinct subscription_id, notif_time;
+| distinct subscription_id, principal_hash, notif_time;
 
 let RevocationDrift = Notifications
 | join kind=inner (AuthoritativeChanges) on principal_hash
 | where notif_time > effective_at
-| join kind=leftanti (ClosedBeforeNotification) on subscription_id, notif_time
+| join kind=leftanti (ClosedBeforeNotification) on subscription_id, principal_hash, notif_time
 | extend Confidence = "high", Boundary = "effective_at", BoundaryTime = effective_at,
          AuthzChangeType = change_type, AuthzChangeSource = change_source;
 
 let ExpiryDrift = Notifications
 | join kind=inner (ExpiryBoundaries) on subscription_id, principal_hash
 | where notif_time > valid_until
-| join kind=leftanti (ClosedBeforeNotification) on subscription_id, notif_time
+| join kind=leftanti (ClosedBeforeNotification) on subscription_id, principal_hash, notif_time
 | extend Confidence = "high", Boundary = "valid_until", BoundaryTime = valid_until,
          AuthzChangeType = "expired", AuthzChangeSource = "token_expiry_computed";
 
@@ -133,7 +138,7 @@ index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscriptio
 | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
     "mcp.subscription.notification_type" as notification_type
 | eval notif_time=_time
-| join type=inner principal_hash
+| join type=inner max=0 principal_hash
     [ search index=mcp_security_audit sourcetype=mcp:audit:json
         "event.name"="mcp.subscription.authorization_change"
         "mcp.authz.change.timing_confidence"="authoritative"
@@ -143,11 +148,11 @@ index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscriptio
       | eval effective_at=strptime('mcp.authz.change.effective_at', "%Y-%m-%dT%H:%M:%S.%3QZ")
       | fields principal_hash effective_at change_type change_source ]
 | where notif_time > effective_at
-| join type=left subscription_id
+| join type=left subscription_id principal_hash
     [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
-      | rename "mcp.subscription.id" as subscription_id
+      | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
       | eval close_time=_time
-      | stats min(close_time) as earliest_close_time by subscription_id ]
+      | stats min(close_time) as earliest_close_time by subscription_id, principal_hash ]
 | where isnull(earliest_close_time) OR earliest_close_time > notif_time
 | eval Boundary="effective_at", BoundaryTime=strftime(effective_at, "%Y-%m-%dT%H:%M:%S.%3QZ")
 | eval Confidence="high"
@@ -158,18 +163,18 @@ index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscriptio
       | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
           "mcp.subscription.notification_type" as notification_type
       | eval notif_time=_time
-      | join type=inner subscription_id
+      | join type=inner max=0 subscription_id principal_hash
           [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.open"
               "mcp.authz.valid_until"=*
-            | rename "mcp.subscription.id" as subscription_id
+            | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
             | eval valid_until=strptime('mcp.authz.valid_until', "%Y-%m-%dT%H:%M:%S.%3QZ")
-            | fields subscription_id valid_until ]
+            | fields subscription_id principal_hash valid_until ]
       | where notif_time > valid_until
-      | join type=left subscription_id
+      | join type=left subscription_id principal_hash
           [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
-            | rename "mcp.subscription.id" as subscription_id
+            | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
             | eval close_time=_time
-            | stats min(close_time) as earliest_close_time by subscription_id ]
+            | stats min(close_time) as earliest_close_time by subscription_id, principal_hash ]
       | where isnull(earliest_close_time) OR earliest_close_time > notif_time
       | eval Boundary="valid_until", BoundaryTime=strftime(valid_until, "%Y-%m-%dT%H:%M:%S.%3QZ")
       | eval change_type="expired", change_source="token_expiry_computed", Confidence="high"
@@ -178,6 +183,14 @@ index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscriptio
 | eval Severity="High", DetectionTrack="Track3_SubscriptionAuthorizationDrift"
 | sort 0 notif_time
 ```
+
+**FIXES (Track 3 remediation pass), see `docs/validation-report.md`:** (1) the expiry-leg join
+now requires `subscription_id` AND `principal_hash` (previously `subscription_id` alone,
+inconsistent with the KQL version above); (2) every `join type=inner` now sets `max=0`, since
+Splunk's `join` command defaults to `max=1` and would otherwise silently keep only the first
+matching authorization_change/open event per notification; (3) the close-suppression joins now
+require `subscription_id` AND `principal_hash` (previously `subscription_id` alone), for the
+same reason as the KQL fix above.
 
 **Note on the ASCII-quote `strptime()` format string above:** it assumes ISO-8601 with
 millisecond precision (`2026-09-05T10:10:00.000Z`). This has not been executed against a live
@@ -195,7 +208,10 @@ current official Sigma correlation specification can order and time-window match
 group them by equal field values, but has **no mechanism to compare one event's field value
 (`effective_at`) against another event's own timestamp, and no mechanism to assert the absence
 of a third event type** (a valid close). As a direct, mechanically-verified consequence
-(`tests/validation/language_equivalence.test.js`):
+(`tests/validation/language_equivalence.test.js`) — **"equivalence" here and above means two
+independently-coded JS models of each language's own written semantics agree row-for-row on a
+shared test corpus, not that any of KQL, SPL, or Sigma was executed natively against a real
+backend (that remains pending — see `README.md`)**:
 
 | Scenario | KQL/SPL (authoritative) | Sigma correlation | Agree? |
 |---|---|---|---|
@@ -235,13 +251,25 @@ and `detections/README.md`, "Sigma limitations for Track 3," for the complete an
 - Depends on a push-based revocation feed for the `effective_at` path, which most real OAuth
   deployments do not have — the `valid_until`/silent-expiry leg exists specifically so detection
   does not depend on one existing at all.
-- The revocation-leg join is by `principal.id_hash` only (not also `mcp.subscription.id`) —
-  intentional, so that a notification event missing `mcp.subscription.id` (malformed
-  telemetry) still correlates — but this means a principal holding two or more concurrent
-  subscriptions, one revoked and one still legitimately valid, could in principle have the
-  still-valid subscription's notifications cross-correlated against the other's revocation
-  boundary. This is a genuine, currently unresolved precision/recall tradeoff, documented in
-  `docs/validation-report.md`, "remaining risks" — not resolved in this release.
+- **[Scope boundary, confirmed, not resolved]** The revocation-leg join is by `principal.id_hash`
+  only (not also `mcp.subscription.id`) — intentional, so that a notification event missing
+  `mcp.subscription.id` (malformed telemetry) still correlates — but this means a principal
+  holding two or more concurrent subscriptions, one revoked and one still legitimately valid,
+  could have the still-valid subscription's notifications cross-correlated against the other's
+  revocation boundary. This is a genuine, unresolved precision/recall tradeoff, now empirically
+  demonstrated by fixture V11-11 (`data/validation/track3/v11_same_principal_cross_subscription_risk.jsonl`)
+  and documented in `docs/validation-report.md`, "remaining risks" / "Track 3 remediation pass" —
+  not resolved in this release, and not fixable without a subscription-id field on
+  `authorization_change` events that does not exist in the locked telemetry contract.
+- **[Code defect, FIXED]** The close-suppression join and the SPL expiry-leg join previously keyed
+  on `subscription_id` alone in one or both languages, which could let one principal's close
+  event suppress a different principal's genuine violation (or miscorrelate expiry across
+  principals) whenever `mcp.subscription.id` values collided. Both now require
+  `subscription_id` AND `principal_hash`. See `docs/validation-report.md`, "Track 3 remediation
+  pass," fixture V11-02.
+- **[Code defect, FIXED]** SPL's `join type=inner` subsearches previously relied on Splunk's
+  `max=1` default and could silently drop additional applicable authorization_change/open
+  events. All such joins now set `max=0`. See fixture V11-01.
 - `detected_at`-only timing is never promoted to this rule's high-confidence result set by
   design — see the separate informational query.
 

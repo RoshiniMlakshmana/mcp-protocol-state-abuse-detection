@@ -5,6 +5,16 @@ explicitly **not** to preserve perfect metrics — it was to find where the Bloc
 and document that honestly. Two real issues were found and fixed; one further, unresolved
 tradeoff was surfaced and is reported rather than papered over.
 
+**Track 3 remediation pass (applied to this document and the codebase):** a follow-up review of
+Track 3 found four further issues — two genuine code defects in `detections/spl/...spl`
+(a join-key inconsistency with KQL, and reliance on Splunk's `join` `max=1` default), one
+vacuous test (`tests/validation/language_equivalence.test.js`'s Track 3 "equivalence" test
+compared one function's output to itself), and several discrepancies between the JS test oracle
+and the actual KQL/SPL query logic. See "Track 3 remediation pass (this document's second
+revision)" below for the full account; the corpus-size table, View 1/2 metrics, mutation table,
+and language-equivalence section further down have all been updated to reflect the fixes and 11
+new regression fixtures (V11-01..V11-11).
+
 **Post-hoc audit correction (applied to this document):** an earlier version of this report
 presented a single "full stress-test corpus" precision/recall table showing FP=0 across the
 board, while separately describing V1-08, V5-02, and V5-09 in prose as benign-but-firing
@@ -31,8 +41,8 @@ version fixes that.
 | Block 3 (normal) | 13 | 106 | Negative-test baseline |
 | Block 4 (attack/control) | 18 | 94 | Positive/negative attack-class proof |
 | **Curated core (3+4)** | **31** | **200** | The metrics reported at the end of Block 5 |
-| Block 6 (validation/stress) | 37 | 163 | Adversarial-but-benign + boundary + evasion fixtures |
-| **Full stress-test corpus (3+4+6)** | **68** | **363** | This block's metrics |
+| Block 6 (validation/stress) | 48 | 220 | Adversarial-but-benign + boundary + evasion fixtures, incl. 11 Track 3 remediation-pass regression fixtures (V11-01..V11-11) |
+| **Full stress-test corpus (3+4+6)** | **79** | **420** | This block's metrics |
 
 All four corpora are deterministic (fixed logical clocks, fixed identifiers, fixed HMAC test
 key) and regenerate byte-for-byte identically. Block 6's corpus lives under `data/validation/`
@@ -92,13 +102,13 @@ alert?"** — that second question is View 2, below.
 | 2 | 5 | 0 | 26 | 0 | 31 | 1.000 | 1.000 |
 | 3 (excl. experimental A-EXP1) | 3 | 0 | 27 | 0 | 30 | 1.000 | 1.000 |
 
-### Full stress-test corpus (68 scenarios) — after the Block 6 fixes below
+### Full stress-test corpus (79 scenarios) — after the Block 6 fixes and the Track 3 remediation pass
 
 | Track | TP | FP | TN | FN | n | Precision | Recall |
 |---|---|---|---|---|---|---|---|
-| 1 | 8 | 0 | 60 | 0 | 68 | 1.000 | 1.000 |
-| 2 | 9 | 0 | 59 | 0 | 68 | 1.000 | 1.000 |
-| 3 (excl. experimental A-EXP1) | 7 | 0 | 60 | 0 | 67 | 1.000 | 1.000 |
+| 1 | 8 | 0 | 71 | 0 | 79 | 1.000 | 1.000 |
+| 2 | 9 | 0 | 70 | 0 | 79 | 1.000 | 1.000 |
+| 3 (excl. experimental A-EXP1) | 15 | 0 | 63 | 0 | 78 | 1.000 | 1.000 |
 
 **These numbers are controlled-corpus implementation-correctness metrics, evaluated under the
 declared prerequisites above. They are NOT real-world precision/recall and must never be cited
@@ -244,9 +254,13 @@ FP or FN relative to the correct implementation):
 | Track 1: missing headers alert as mismatch | 0 / — | 1 / — | Yes |
 | Track 2: any `deny` fires (drops reason check) | 0 / — | 3 / — | Yes |
 | Track 2: any `mcp.task.authorization` event fires (drops decision check) | 0 / — | 19 / — | Yes |
-| Track 3: `detected_at` used instead of `effective_at` | — / 0 | — / 3 | Yes |
-| Track 3: close-suppression check removed | 0 / — | 50 / — | Yes |
-| Track 3: `mcp.authz.change.type` filter removed (reintroduces V5-03) | 0 / — | 51 / — | Yes |
+| Track 3: `detected_at` used instead of `effective_at` | — / 0 | — / 4 | Yes |
+| Track 3: close-suppression check removed | 0 / — | 51 / — | Yes |
+| Track 3: `mcp.authz.change.type` filter removed (reintroduces V5-03) | 0 / — | 52 / — | Yes |
+
+(Counts grew alongside the corpus after the Track 3 remediation pass added 11 regression
+fixtures; re-run `node --test tests/validation/mutation.test.js` rather than assuming these
+exact numbers stay fixed across future corpus changes.)
 
 The last row is a direct, mechanical demonstration that this validation suite would have caught
 the V5-03 regression had it not already been fixed — the mutation test literally reconstructs
@@ -254,11 +268,26 @@ the pre-fix logic and confirms it produces exactly the class of false positive V
 
 ## Language-equivalence findings (V9)
 
+**Correction (Track 3 remediation pass):** the Track 3 "KQL and SPL are mutually equivalent"
+test in a prior revision of this suite called `track3PrimaryFires` twice on the same input and
+asserted the result equal to itself — a tautology that could never fail and verified nothing.
+It has been replaced with two **independently-coded JS models**, one written from KQL's own
+literal semantics (`kqlModelRows`) and one from the corrected SPL's own literal semantics
+(`splModelCorrectedRows`), compared **row-for-row** (not just as a boolean) across the full
+stress corpus. **This disclaimer applies throughout this section: neither model executes actual
+KQL or SPL, and neither runs against a real Sentinel/Splunk backend — "equivalent" means "these
+two independently-authored models of each language's documented semantics agree," which is the
+strongest claim achievable without native execution (still pending; see README.md).**
+
+A third model, `splModelPreFixBuggyRows`, reconstructs the **original, pre-fix** SPL semantics
+(subscription_id-only expiry join, first-match-only joins) purely to prove the regression corpus
+actually exercises the fixed bugs — see "Track 3 remediation pass" below.
+
 | Track | Sigma vs. KQL vs. SPL | Verified how |
 |---|---|---|
-| 1 | Fully equivalent across all 68 stress-corpus scenarios | `tests/validation/language_equivalence.test.js` — three independently-written JS predicates mirroring each language's literal filter, zero disagreements |
-| 2 | Fully equivalent across all 68 stress-corpus scenarios | Same method, zero disagreements |
-| 3 | **KQL and SPL are mutually equivalent (both authoritative). Sigma is NOT equivalent — retained only as a documented, deliberately incomplete correlation.** | See matrix below |
+| 1 | Fully equivalent across all 79 stress-corpus scenarios | `tests/validation/language_equivalence.test.js` — three independently-written JS predicates mirroring each language's literal filter, zero disagreements |
+| 2 | Fully equivalent across all 79 stress-corpus scenarios | Same method, zero disagreements |
+| 3 | **The independently-coded KQL-semantics and corrected-SPL-semantics models agree row-for-row across all 79 stress-corpus scenarios. Sigma is NOT equivalent — retained only as a documented, deliberately incomplete correlation.** | Row-level `assert.deepEqual` per scenario, not a boolean comparison; see matrix below for the Sigma comparison |
 
 ### Track 3 Sigma-vs-authoritative comparison matrix (curated core, non-experimental)
 
@@ -292,15 +321,102 @@ are specific to Sigma's correlation model).
   constants/allowlists downstream of these rules, not by expecting the base rules to know about
   deployment-specific policy.
 
+## Track 3 remediation pass (this document's second revision)
+
+A follow-up review of Track 3 (after the original Block 6 pass above) found four further issues
+and requested regression coverage for eleven specific scenarios. Applied directly to this
+repository — no ZIP/patch workflow, Tracks 1 and 2 untouched, original Block 3/Block 4 corpora
+byte-identical on regeneration.
+
+### Code defects fixed
+
+1. **SPL expiry-leg join key inconsistent with KQL.** `detections/spl/mcp_subscription_authorization_drift.spl`'s
+   silent-expiry leg previously joined `Notifications` to the open-event subsearch on
+   `subscription_id` alone; KQL's equivalent (`ExpiryBoundaries`) already correctly joined on
+   `subscription_id, principal_hash`. Fixed by retaining `principal.id_hash` through the SPL
+   open-event subsearch (renamed to `principal_hash`) and changing the join to
+   `join type=inner max=0 subscription_id principal_hash [...]`. Classification: **code defect**
+   (SPL/KQL divergence, not a design choice). Proven by fixture V11-02 (see below).
+2. **SPL inner joins relied on Splunk's `join` `max=1` default.** Every `join type=inner`
+   subsearch in the SPL file (authoritative-revocation leg, silent-expiry leg, and the
+   informational detected_only search) now explicitly sets `max=0`, so every applicable matching
+   row is preserved instead of silently keeping only the first. The aggregated close-suppression
+   joins (`join type=left ... [stats min(close_time) ... by subscription_id, principal_hash]`)
+   are deliberately left at the default, per instruction, since the `stats min(...)` subsearch
+   already collapses to at most one row per key — there is nothing for `max=0` to preserve there.
+   Classification: **code defect**. Proven by fixture V11-01 (see below).
+3. **Close-suppression join scoped by `subscription_id` alone (KQL and SPL, and the JS oracle).**
+   `mcp.subscription.id` is only a per-connection JSON-RPC request id (Block 1 SS7) and is not
+   guaranteed globally unique across different principals' connections. Fixed by requiring
+   `principal.id_hash` in addition to `subscription_id` on the close-suppression join in
+   `detections/kql/mcp_subscription_authorization_drift.kql`,
+   `detections/spl/mcp_subscription_authorization_drift.spl`, and
+   `tests/attack/track3util.js`. `principal.id_hash` is a required field on
+   `mcp.subscription.close` (`telemetry/schema.md`) and confirmed present in real generated
+   fixtures — this uses existing telemetry, it does not invent a new field. Classification:
+   **code defect**. Proven by fixture V11-02.
+4. **JS test oracle discrepancies vs. the actual KQL/SPL queries** (`tests/attack/track3util.js`):
+   the oracle required an `mcp.subscription.open` event to exist even though the revocation
+   leg's real KQL/SPL join never depends on one; used `.find()` (first match only) instead of
+   iterating every applicable `authorization_change`/`open` event; and evaluated the revocation
+   and expiry legs as an if/else-if chain that stopped at the first non-empty leg instead of two
+   independent legs unioned together (matching KQL's `union` / SPL's `append`). All three fixed;
+   `computeTrack3Verdict` is now a backward-compatible scalar wrapper over a new
+   `computeTrack3AlertRows(events)` that returns every independent alert row, enabling row-level
+   (not just boolean) test assertions. Classification: **code defect**. Proven by fixtures
+   V11-01, V11-03, V11-04, V11-05.
+
+### Validation gap withdrawn
+
+5. **Vacuous Track 3 "language equivalence" test.** See "Language-equivalence findings (V9)"
+   above — the test called one function twice and asserted the tautology. Replaced with two
+   independently-coded models compared row-for-row, with an explicit disclaimer that neither
+   executes native KQL/SPL. Classification: **validation gap**, now closed to the extent
+   achievable without native execution (still pending).
+
+### New regression fixtures (V11-01..V11-11, `data/validation/track3/v11_*.jsonl`)
+
+| ID | Scenario | Fires? | What it proves |
+|---|---|---|---|
+| V11-01 | Multiple authorization changes, future boundary emitted before an earlier valid one | Yes (3 rows total) | Iterates every applicable change by field value, not stream order or first-match |
+| V11-02 | Same subscription_id, different principals (+ one closes their own subscription) | Yes (1 row, Alice only) | Revocation-leg principal-only join is correct; close-suppression correctly requires principal_hash too |
+| V11-03 | Revocation and expiry both applicable to one notification | Yes (2 rows) | Both legs evaluated independently and unioned, not short-circuited |
+| V11-04 | Expiry precedes a later-recorded, future revocation | Yes (1 then 2 rows) | Leg independence holds regardless of which boundary is chronologically or causally "discovered" first |
+| V11-05 | Revocation with no retained open event | Yes (1 row) | Revocation leg does not require an `open` event to exist |
+| V11-06 | Close on another subscription (same principal) | Yes (1 row) | Close-suppression correctly requires subscription_id too (opposite direction from V11-02) |
+| V11-07 | Close exactly at notification time | No | Inclusive close-boundary convention (`close_time <= notif_time` suppresses) |
+| V11-08 | Notification exactly at valid_until | No | Exclusive invalidation-boundary convention, expiry-leg variant of V5-05 |
+| V11-09 | Scope upgrade, no expiry reached | No | `scope_upgraded` never leaks into either leg |
+| V11-10 | Multiple (duplicate) close events | Yes (1 row, before the closes) | Close suppression is an "any close at/before" check, robust to duplicate close rows |
+| V11-11 | Same-principal cross-subscription correlation risk | Yes (1 row, mechanically) | Documents the KNOWN, UNRESOLVED scope boundary below — not silently fixed |
+
+Row-level assertions (exact expected rows, not just fired/not-fired booleans) are in
+`tests/validation/track3_row_regression.test.js`. That file also includes two
+"RESTORED-BUG PROOF" tests that reconstruct the pre-fix buggy behavior independently and show it
+would have produced a different (wrong) result on V11-01 and V11-02 — direct evidence that this
+regression suite would catch a reintroduction of either the join-key bug or the one-match bug.
+
+### Scope boundary confirmed, deliberately NOT fixed
+
+**Same-principal, multiple concurrent subscriptions on the revocation leg** (previously listed
+as "remaining risks" item 1 below, based on reasoning alone) is now **empirically demonstrated**
+by fixture V11-11: a principal with two concurrent subscriptions, one revoked, has the *other,
+still-valid* subscription's notification mechanically fire, because
+`mcp.subscription.authorization_change` carries no subscription id to disambiguate. Per explicit
+instruction, this is reported as an unresolved scope boundary, not fixed by tightening the join
+(which would reintroduce the V6-02 blind spot) or by inventing a subscription-id field that does
+not exist in the locked telemetry contract.
+
 ## Remaining risks (unresolved, explicitly not decided in this block)
 
 1. **Track 3's principal-only join for the authoritative/detected_only legs** (required to keep
    V6-02-style malformed telemetry detectable) can, for a principal holding two or more
-   concurrent subscriptions where only one is revoked, in principle cross-correlate the
-   still-valid subscription's notifications against the other's revocation boundary. No
-   fixture in this project currently exercises multiple concurrent subscriptions per principal,
-   so this remains a reasoned risk, not yet an empirically demonstrated false positive. Deciding
-   whether to tighten the join (trading away the V6-02 fix) is deferred to a later block.
+   concurrent subscriptions where only one is revoked, cross-correlate the still-valid
+   subscription's notifications against the other's revocation boundary. **Now empirically
+   demonstrated** by fixture V11-11 (Track 3 remediation pass, above) — no longer only a
+   reasoned risk. Deciding whether to tighten the join (trading away the V6-02 fix) remains
+   deferred; doing so would require a subscription-id field on `authorization_change` events
+   that does not exist in the locked telemetry contract, and inventing one is out of scope.
 2. **Collector canonicalization dependency (V1-08)** has no rule-layer mitigation; only
    upstream instrumentation correctness prevents it.
 3. **Severity-by-`mcp.validation.source` differentiation** for Track 1 remains an open,
@@ -312,3 +428,13 @@ No Block 1 or Block 2 invariant, telemetry field, or detection track definition 
 one substantive change (Block 6 fix, V5-03) is a Block 5 rule-logic refinement — it narrows
 which existing `mcp.authz.change.type` enum value a rule already reads counts as invalidating.
 Nothing was added to, removed from, or reinterpreted in the locked telemetry contract.
+
+The Track 3 remediation pass (above) likewise adds no new telemetry field and changes no locked
+invariant. It (a) fixes SPL to match KQL's already-correct join keys, (b) fixes SPL's `join`
+semantics to preserve every applicable match, (c) tightens the close-suppression join to use an
+already-existing, already-required field (`principal.id_hash` on `mcp.subscription.close`), and
+(d) fixes the JS test oracle to faithfully mirror the corrected queries. Detection scope was not
+silently narrowed or widened — the one scope-relevant fact (item (c)) uses telemetry the schema
+already mandates, and the one scope boundary confirmed as unresolved (multi-subscription
+cross-correlation, V11-11) is reported, not quietly patched over with an invented field or grace
+period.

@@ -34,6 +34,15 @@ before deploying anything here.
   "Investigation fields" should be checked before treating a hit as confirmed malicious.
 - **Track 3's Sigma correlation rule is best-effort hunting content, not semantically
   equivalent to the KQL/SPL implementations** for that track — see "Operational limitations."
+- **"KQL and SPL equivalence" for Track 3 means two independently-coded JS models of each
+  language's own written semantics agree row-for-row on the shared corpus — not that either was
+  executed as native KQL or SPL against a real backend.** See `tests/validation/language_equivalence.test.js`
+  and "Native execution" above. A prior version of this test compared one oracle function to
+  itself and has been replaced.
+- **Track 3 has one known, explicitly unresolved scope boundary**: a principal holding two or
+  more concurrent subscriptions cannot be disambiguated on the revocation leg, because
+  `mcp.subscription.authorization_change` carries no subscription id at all. See "Operational
+  limitations" and fixture V11-11.
 - **No claim of proven novelty, and no claim of detections.ai acceptance, is made anywhere in
   this project.** `publication/novelty-check.md` documents a specific research pass, not a
   guarantee that no prior art exists; this project has not been submitted to or accepted by
@@ -108,7 +117,7 @@ result never does.
 3. **Normal corpus** — `data/normal/` (13 scenarios / 106 events)
 4. **Controlled attacks** — `data/attack/` (18 scenarios / 94 events)
 5. **Detection rules** — `detections/` (Sigma, KQL, SPL)
-6. **Validation** — `data/validation/` (37 scenarios / 163 events) + `docs/validation-report.md`
+6. **Validation** — `data/validation/` (48 scenarios / 220 events) + `docs/validation-report.md`
 7. **Publication** — `publication/` (this block)
 
 ## Results
@@ -117,11 +126,16 @@ result never does.
 |---|---|---|
 | Normal (Block 3) | 13 | 106 |
 | Attack/control (Block 4) | 18 | 94 |
-| Validation/stress (Block 6) | 37 | 163 |
-| **Total** | **68** | **363** |
+| Validation/stress (Block 6) | 48 | 220 |
+| **Total** | **79** | **420** |
 
-**104/104 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
+**118/118 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
 tests/detections/*.test.js tests/validation/*.test.js`), fully deterministic on regeneration.
+This count reflects an active Track 3 remediation pass (SPL join-key/max=0 fixes, oracle
+multi-boundary/independent-leg fixes, a genuine two-model language-equivalence replacement, and
+11 new regression fixtures, V11-01..V11-11) — see `docs/validation-report.md` for the full
+before/after account. Re-run the suite yourself rather than assuming any specific number stays
+fixed across future changes.
 
 Controlled-corpus precision/recall is 1.000/1.000 for all three tracks under their declared
 prerequisites (see `docs/validation-report.md`, "View 1"). **This is not, and must not be read
@@ -132,31 +146,72 @@ prerequisite is violated is in `docs/validation-report.md`, "View 2", and summar
 
 ## Operational limitations
 
-- **Collector canonicalization can create Track 1 artifacts.** A collector that hashes a
-  Base64-sentinel-encoded routing header without decoding it first will manufacture a false
-  conflict for an identical underlying value. Treat `mcp.validation.source = collector_derived`
-  conflicts as lower-confidence than `server_native` ones pending corroboration.
-- **Track 2 depends on trustworthy server-side authorization audit telemetry.** If a server
-  mislabels `mcp.authz.reason`, or an attacker holds the victim's own valid stolen credentials,
-  the emitted telemetry looks identical to a legitimate access — not detectable by this rule.
-- **Track 3 depends on trustworthy authorization timing and policy semantics.** Clock skew
-  between the authorization server and MCP server, or an authorization server misreporting
-  `effective_at`, can hide a real violation. No field in the locked telemetry contract
-  represents this risk directly.
-- **Grace periods / open-stream policy exemptions require tuning.** Track 3 has no schema field
-  for either; deployments with such policies will see known, documented false positives until
-  they add deployment-side suppression (a query-level constant or allowlist).
-- **Missing telemetry creates visibility gaps, not false negatives that can be silently fixed.**
-  No `mcp.task.authorization` event, no `mcp.subscription.authorization_change`/`valid_until` —
-  these tracks have nothing to reason from and correctly stay silent.
-- **A compromised but legitimate identity evades authorization-state logic entirely.** Track 2
-  detects a mismatch between caller and authorization context, not that the caller's own claimed
-  identity is fraudulent — identity theft is upstream of this telemetry.
-- **Sigma Track 3 is incomplete compared with KQL/SPL.** Sigma's correlation model can order and
-  time-window matched events but cannot compare a field value (`effective_at`) against another
-  event's own timestamp, and cannot assert the absence of a closing event. The Sigma correlation
-  rule is retained as best-effort hunting content and is documented, in its own file, as **not**
-  semantically equivalent to the authoritative KQL/SPL implementations.
+Each item below is classified as exactly one of: a **code defect** (a bug in this project's own
+rule/oracle logic, now fixed unless stated otherwise), a **deployment prerequisite** (the rule is
+correct but depends on an environment condition outside this project's control), a **validation
+gap** (not yet checked against something that would strengthen confidence, e.g. a live backend),
+or a **scope boundary** (a limitation inherent to the declared detection logic/telemetry
+contract, not something a code change here can close).
+
+- **[Code defect, FIXED this pass] SPL's Track 3 expiry-leg join and close-suppression join
+  previously keyed on `subscription_id` alone.** `detections/spl/mcp_subscription_authorization_drift.spl`
+  now requires `subscription_id` AND `principal_hash` on both, matching KQL, because
+  `mcp.subscription.id` is only a per-connection JSON-RPC id and is not globally unique across
+  principals (see fixture V11-02).
+- **[Code defect, FIXED this pass] SPL's `join type=inner` subsearches previously relied on
+  Splunk's `max=1` default,** silently keeping only the first matching authorization_change/open
+  event per notification. All such joins now set `max=0` (see fixture V11-01).
+- **[Code defect, FIXED this pass] The JS test oracle (`tests/attack/track3util.js`) previously
+  required an `open` event to exist, used `.find()` instead of iterating every applicable
+  change, and evaluated the revocation/expiry legs as an if/else-if chain instead of two
+  independent, unioned legs.** All three are fixed; see `computeTrack3AlertRows` and fixtures
+  V11-01, V11-03, V11-04, V11-05.
+- **[Validation gap, WITHDRAWN this pass] A prior Track 3 "language equivalence" test compared
+  one oracle function's output to itself and proved nothing.** It has been replaced with two
+  independently-coded JS models (one per language's own written semantics) compared row-for-row
+  — see `tests/validation/language_equivalence.test.js`. This remains a JS-model comparison, not
+  native query execution (see "Validation status and disclosures" above).
+- **[Scope boundary, NOT fixed, reported not resolved] Same-principal, multiple concurrent
+  subscriptions on the revocation leg.** `mcp.subscription.authorization_change` carries no
+  subscription id at all, so a principal holding two or more concurrent subscriptions — one
+  revoked, one still legitimately valid — can have the still-valid subscription's notifications
+  incorrectly matched to the other's revocation. Tightening the join to also require
+  `subscription_id` would remove this risk but would reintroduce a different blind spot (a
+  notification missing its own `subscription_id` would no longer correlate at all). See fixture
+  V11-11 and `docs/validation-report.md`.
+- **[Deployment prerequisite] Collector canonicalization can create Track 1 artifacts.** A
+  collector that hashes a Base64-sentinel-encoded routing header without decoding it first will
+  manufacture a false conflict for an identical underlying value. Treat
+  `mcp.validation.source = collector_derived` conflicts as lower-confidence than `server_native`
+  ones pending corroboration.
+- **[Scope boundary] Track 2 depends on trustworthy server-side authorization audit telemetry.**
+  If a server mislabels `mcp.authz.reason`, or an attacker holds the victim's own valid stolen
+  credentials, the emitted telemetry looks identical to a legitimate access — not detectable by
+  this rule.
+- **[Deployment prerequisite] Track 3 depends on trustworthy authorization timing and policy
+  semantics.** Clock skew between the authorization server and MCP server, or an authorization
+  server misreporting `effective_at`, can hide a real violation. No field in the locked telemetry
+  contract represents this risk directly.
+- **[Deployment prerequisite] Grace periods / open-stream policy exemptions require tuning.**
+  Track 3 has no schema field for either; deployments with such policies will see known,
+  documented false positives until they add deployment-side suppression (a query-level constant
+  or allowlist).
+- **[Scope boundary] Missing telemetry creates visibility gaps, not false negatives that can be
+  silently fixed.** No `mcp.task.authorization` event, no
+  `mcp.subscription.authorization_change`/`valid_until` — these tracks have nothing to reason
+  from and correctly stay silent.
+- **[Scope boundary] A compromised but legitimate identity evades authorization-state logic
+  entirely.** Track 2 detects a mismatch between caller and authorization context, not that the
+  caller's own claimed identity is fraudulent — identity theft is upstream of this telemetry.
+- **[Scope boundary] Sigma Track 3 is incomplete compared with KQL/SPL.** Sigma's correlation
+  model can order and time-window matched events but cannot compare a field value
+  (`effective_at`) against another event's own timestamp, and cannot assert the absence of a
+  closing event. The Sigma correlation rule is retained as best-effort hunting content and is
+  documented, in its own file, as **not** semantically equivalent to the authoritative KQL/SPL
+  implementations.
+- **[Validation gap] Native execution against a real Microsoft Sentinel workspace or Splunk
+  instance remains pending.** Nothing in this remediation pass changes that — all fixes were
+  verified via the JS models/oracle described above, never against a live backend.
 
 ## Reproduction
 
@@ -173,7 +228,7 @@ cd tools/harness && node generate_attacks.js && cd ../..
 # Generate the validation/stress corpus (Block 6)
 cd tools/harness && node generate_validation.js && cd ../..
 
-# Run all tests (104 total)
+# Run all tests (118 total; re-run to confirm, do not assume this number)
 node --test tests/normal/*.test.js tests/attack/*.test.js tests/detections/*.test.js tests/validation/*.test.js
 ```
 
@@ -187,7 +242,7 @@ docs/            threat model, invariants, false-positive analysis, evasion limi
 telemetry/       the locked audit telemetry contract (schema, field mapping, correlation logic)
 data/            normal / attack / validation corpora (JSONL) + manifests + per-corpus READMEs
 tools/harness/   deterministic corpus generators + shared hashing/protocol-validation helpers
-tests/           Node test suites (normal, attack, detections, validation) — 104 tests
+tests/           Node test suites (normal, attack, detections, validation) — 118 tests
 detections/      Sigma / KQL / SPL rules + field-mapping + detection documentation
 publication/     detections.ai / GitHub Sync / Intel Exchange / novelty-check materials (this block)
 ```
