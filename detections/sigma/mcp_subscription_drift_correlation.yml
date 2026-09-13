@@ -1,0 +1,72 @@
+title: MCP Subscription Authorization Drift (Best-Effort Sigma Correlation -- Read Limitations Below)
+id: deb26dde-0dbb-4edb-87d6-98a2e58ef1e7
+status: experimental
+description: |
+    BEST-EFFORT correlation between mcp_subscription_authorization_change_authoritative.yml and
+    mcp_subscription_notification.yml, grouped by principal.id_hash, requiring the authoritative
+    authorization-change event to be followed (temporal_ordered) by a notification event within
+    the timespan window.
+
+    ==================================================================================
+    THIS RULE DOES NOT FAITHFULLY IMPLEMENT THE LOCKED TRACK 3 CONDITION. READ BEFORE USE.
+    ==================================================================================
+    The current Sigma correlation specification (sigma-correlation-rules-specification.md,
+    verified 2026-09-13) can only (a) require that events matching each referenced rule occur,
+    in the given order, within a timespan, grouped by an equal field value, and (b) count/
+    aggregate values. It has NO mechanism to compare one event's FIELD VALUE (such as
+    mcp.authz.change.effective_at) against another event's own timestamp, and NO mechanism to
+    assert the ABSENCE of a third event type (a valid close) between the two. Concretely, this
+    means the rule as written:
+      1. Cannot detect Block 4 scenario A13 (token_expiry_drift) at all: A13 has no
+         mcp.subscription.authorization_change event whatsoever (silent expiry against
+         mcp.authz.valid_until) -- there is nothing for this correlation's first leg to match.
+      2. Produces a FALSE NEGATIVE on Block 4 scenario A14 (delayed_revocation_observation):
+         Sigma's temporal_ordered evaluates order by each event's OWN log timestamp. In A14 the
+         notification's own timestamp (10:12) is chronologically BEFORE the
+         authorization_change event's own timestamp (10:14, when it was detected/logged), even
+         though the change event's effective_at field (10:10) proves the notification was
+         already a violation. temporal_ordered requires the referenced rules' events to appear
+         in the literal order listed (change, then notification) and will not match here.
+      3. Cannot verify condition #4 of the locked Track 3 model (no valid close occurred before
+         the notification) at all -- there is no negation/absence construct in the
+         specification to express it. A correlation hit here does NOT by itself rule out that a
+         mcp_subscription_close.yml event legitimately preceded the notification; an analyst or
+         downstream pipeline must check that separately (see mcp_subscription_close.yml).
+    Of the three non-experimental Track 3 true positives in the Block 4 corpus (A12, A13, A14),
+    this correlation rule correctly matches ONLY A12. It correctly does NOT match A15
+    (detected_only -- excluded because it never satisfies the "authoritative" component rule)
+    and A16 (no notification exists after the change event to correlate against). See
+    detections/README.md, "Sigma limitations for Track 3", for the full analysis.
+    THE KQL AND SPL IMPLEMENTATIONS ARE THE AUTHORITATIVE, FAITHFUL DETECTION FOR TRACK 3.
+    This Sigma correlation is retained because the specification is capable of expressing part
+    of the condition, and because the component rules it is built from remain independently
+    useful for hunting -- not because it is a complete substitute for the KQL/SPL logic.
+references:
+    - https://github.com/SigmaHQ/sigma-specification/blob/main/specification/sigma-correlation-rules-specification.md
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions
+author: MCP Protocol-State Abuse Detection project
+date: 2026-09-13
+correlation:
+    type: temporal_ordered
+    rules:
+        - mcp_subscription_authorization_change_authoritative
+        - mcp_subscription_notification
+    group-by:
+        - principal.id_hash
+    timespan: 120m
+falsepositives:
+    - A correctly-closed subscription (Block 4 A16) will NOT match this correlation as written
+      (no qualifying notification exists after the change), so this specific false-positive
+      class does not actually occur for this rule -- documented here anyway because it is the
+      first thing to check by hand if a backend's interpretation of temporal_ordered differs
+      from the reference specification.
+    - A different, later subscription opened by the same principal after a legitimate
+      re-authorization could, in principle, supply the "notification" leg if group-by is only
+      principal.id_hash and the timespan is wide -- this is why mcp.subscription.id should also
+      be checked manually during triage even though it cannot be added to group-by here (the
+      authorization_change event does not carry a subscription id at all, per Block 1 SS5/SS16).
+level: high
+tags:
+    - detection.threat-hunting
+# No MITRE ATT&CK tag: see detections/README.md. This models a control/propagation-delay gap,
+# not adversary tradecraft, and no technique precisely fits.

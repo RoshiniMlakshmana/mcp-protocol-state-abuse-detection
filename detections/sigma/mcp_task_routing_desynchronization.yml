@@ -1,0 +1,61 @@
+title: MCP Task Routing Header/Body Value Disagreement
+id: cf8ac1f5-8911-4061-b3d5-435a6febdd44
+status: experimental
+description: |
+    Detects a Streamable HTTP MCP request where the Mcp-Method or Mcp-Name routing header
+    (SEP-2243, MCP specification revision 2026-07-28) carries a value that conflicts with the
+    corresponding JSON-RPC body field (method, or params.taskId/name/uri). Under the current
+    specification, a compliant server validates these against each other and rejects a genuine
+    disagreement with HeaderMismatch (-32020, HTTP 400) precisely because a load balancer,
+    gateway, or other intermediary may make routing decisions from the header alone while a
+    downstream component executes on the body -- a real conflicting value is exactly the
+    condition that lets two components disagree about which method/task is being acted on.
+    This rule fires ONLY on an actual value disagreement (mcp.validation.*.result = "conflict").
+    It deliberately does NOT fire on a missing header, which under an older, still-supported
+    protocol negotiation is legitimate compatibility traffic rather than a routing violation --
+    see mcp_task_routing_missing_header_diagnostic.yml for that lower-confidence, separate case.
+references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    - https://modelcontextprotocol.io/specification/2026-07-28/changelog
+author: MCP Protocol-State Abuse Detection project
+date: 2026-09-13
+logsource:
+    category: application
+    product: mcp
+    service: mcp_security_audit
+detection:
+    selection_event:
+        event.name: mcp.request.validation
+    selection_conflict:
+        mcp.validation.method.result: conflict
+    selection_conflict_alt:
+        mcp.validation.name.result: conflict
+    condition: selection_event and 1 of selection_conflict*
+fields:
+    - jsonrpc.request.id
+    - mcp.header.method
+    - mcp.body.method
+    - mcp.header.name_hash
+    - mcp.body.identity_hash
+    - mcp.validation.method.result
+    - mcp.validation.name.result
+    - mcp.validation.source
+    - mcp.validation.reason
+falsepositives:
+    - Client, SDK, or proxy implementation defects that mirror a stale or incorrectly
+      constructed header value while sending a different body value (Block 1
+      threat-model.md SS14 discusses the header-downgrade evasion path; an accidental
+      mismatch from a buggy client looks identical on the wire to a probing attempt).
+    - A migration-era client library that partially implements SEP-2243 (sets one header
+      correctly but derives the other from stale cached state).
+    - A malformed request from a non-compliant, in-development client -- this is a real
+      protocol violation regardless of intent, but is not necessarily hostile.
+level: high
+tags:
+    - detection.threat-hunting
+# No MITRE ATT&CK tag is assigned. ATT&CK models adversary behavior; this rule detects a
+# transport-layer protocol-envelope inconsistency that is equally produced by a buggy client,
+# a misconfigured intermediary, or a deliberate probe, and no current ATT&CK technique
+# precisely describes "MCP routing header/body desynchronization." Forcing a loosely related
+# tag (e.g. a generic command-and-control or protocol-tunneling technique) would misrepresent
+# the finding. See detections/README.md for the full rationale.

@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+package-lock.json.bak
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Environment / secrets (this project must never contain real credentials)
+.env
+.env.*
+*.pem
+*.key
+!tools/**/*.key.example
+
+# Logs and scratch output
+*.log
+npm-debug.log*
+/tmp/
+*.tmp
+
+# Editor backups
+*~

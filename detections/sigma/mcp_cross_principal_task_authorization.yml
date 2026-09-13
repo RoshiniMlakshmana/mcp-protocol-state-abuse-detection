@@ -1,0 +1,68 @@
+title: MCP Cross-Principal Task Authorization Violation
+id: 92a674ad-4000-4a11-98e6-0ed1e93d54b7
+status: experimental
+description: |
+    Detects a server-side authorization denial for an MCP task operation (tasks/get,
+    tasks/update, tasks/cancel, or task creation) where the denial reason specifically records
+    a principal/task-context mismatch (mcp.authz.reason = "principal_mismatch") -- i.e., the
+    authenticated caller is not the principal the task's authorization context is bound to, and
+    is not covered by an explicit shared-access grant. This is deliberately narrower than "any
+    denial": ordinary policy denials, insufficient-scope denials, and denials for a nonexistent
+    task (mcp.authz.reason = policy_denied / insufficient_scope / context_unbound) are excluded
+    on purpose, because they are not cross-principal task misuse.
+    This rule relies entirely on explicit server-side authorization evidence
+    (mcp.authz.decision, mcp.authz.reason) and never on the JSON-RPC response code: per SEP-2663
+    and the current MCP specification, a denied request against an existing-but-unauthorized
+    task and a request against a genuinely nonexistent task both typically surface the same
+    -32602 (Invalid params) response, specifically so a caller cannot use the error to enumerate
+    valid task IDs belonging to other principals. That ambiguity is exactly why this rule must
+    be built on mcp.authz.* fields rather than on rpc.status_code or http.response.status_code.
+    A null mcp.task.authz_context_id_hash never gates this rule in either direction -- the
+    server's own recorded decision/reason is authoritative regardless of whether the audit
+    pipeline could also independently resolve the task's owning context.
+references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/schema#headermismatcherror
+    - https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2663-tasks-extension.md
+    - https://modelcontextprotocol.io/seps/2663-tasks-extension
+author: MCP Protocol-State Abuse Detection project
+date: 2026-09-13
+logsource:
+    category: application
+    product: mcp
+    service: mcp_security_audit
+detection:
+    selection:
+        event.name: mcp.task.authorization
+        mcp.authz.decision: deny
+        mcp.authz.reason: principal_mismatch
+    condition: selection
+fields:
+    - principal.id_hash
+    - mcp.task.id_hash
+    - mcp.task.authz_context_id_hash
+    - mcp.task.operation
+    - mcp.authz.reason
+    - mcp.authz.policy_version
+falsepositives:
+    - Incorrect server-side policy configuration that denies (and mislabels as
+      principal_mismatch) an access that should actually have been an explicit shared grant
+      (compare against mcp_..._authorization.yml hits where mcp.authz.reason = authorized_grant
+      for the same mcp.task.id_hash, which would indicate a policy inconsistency rather than an
+      attack).
+    - Shared/delegated access that exists at the application layer but was not correctly
+      represented in the authorization telemetry (e.g., a grant that was issued but not yet
+      reflected in the system that emits mcp.authz.reason).
+    - Stale authorization context after a task or grant was recently transferred between
+      principals, if the transfer briefly races with an in-flight request.
+level: high
+# No MITRE ATT&CK tag is assigned. Block 5 originally proposed T1550.001 (Use Alternate
+# Authentication Material: Application Access Token) on the reasoning that SEP-2663 treats task
+# IDs as bearer-token-like credentials. Block 7 re-evaluated this and withdrew it: in every
+# scenario this rule actually detects (Block 4 A7-A10, Block 6 V2-01), the caller authenticates
+# with their OWN legitimate credentials -- the violation is an AUTHORIZATION-boundary failure
+# (accessing an object identifier you are not entitled to), not an AUTHENTICATION-material
+# failure (using someone else's token/credential to authenticate AS them). T1550.001 describes
+# the latter, which this rule does not detect; the former is closer to an IDOR-style
+# object-authorization issue, which ATT&CK -- as an adversary-behavior taxonomy -- has no
+# precise technique for. Do not assign a technique on the basis that the behavior sounds
+# generally like credential access; see detections/README.md for the full rationale.

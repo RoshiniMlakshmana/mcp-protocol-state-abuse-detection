@@ -1,0 +1,25 @@
+```
+MCP Cross-Principal Task Authorization Violation (Track 2)
+
+Placeholder source: index=mcp_security_audit sourcetype=mcp:audit:json -- not shipped by
+Splunk by default. See detections/field-mapping.md.
+
+Sigma equivalent: detections/sigma/mcp_cross_principal_task_authorization.yml
+
+Relies entirely on server-side authorization evidence (mcp.authz.decision/reason). Never
+filters or infers from response/error codes: a denied request against an existing-but-
+unauthorized task and a request against a genuinely nonexistent task both typically surface
+the same -32602 response (SEP-2663's anti-enumeration design, docs/threat-model.md SS10) --
+that ambiguity is exactly why this must be a server-side-evidence filter. A null
+mcp.task.authz_context_id_hash is deliberately not part of the filter in either direction; it
+appears only as investigation context in the output table.
+```
+
+index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.task.authorization"
+    "mcp.authz.decision"="deny" "mcp.authz.reason"="principal_mismatch"
+| eval Severity="High"
+| eval DetectionTrack="Track2_CrossPrincipalTaskAuthorization"
+| table _time Severity DetectionTrack "principal.id_hash" "principal.authenticated"
+    "mcp.task.id_hash" "mcp.task.authz_context_id_hash" "mcp.task.operation"
+    "mcp.authz.decision" "mcp.authz.reason" "mcp.authz.policy_version"
+| sort 0 _time

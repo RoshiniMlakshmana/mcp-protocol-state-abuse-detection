@@ -1,0 +1,55 @@
+title: MCP Routing Header Missing or Malformed (Diagnostic, Not a Confirmed Desync)
+id: a111f9fa-6013-4ec5-980f-1533b5b2ed6f
+status: experimental
+description: |
+    Diagnostic-only companion to mcp_task_routing_desynchronization.yml. Fires when a routing
+    header validation result is "missing" or "malformed" rather than "conflict". This is
+    DELIBERATELY separate from, and lower severity than, the primary conflicting-value rule:
+    a missing header can arise from a benign compatibility path (an older negotiated protocol
+    version that predates SEP-2243, which the pipeline should normally classify as
+    "version_incompatible" rather than "missing" -- see telemetry/schema.md and
+    docs/state-invariants.md row 3), from a collector visibility gap (mcp.validation.source =
+    collector_derived, where the collector simply did not observe the header), or from a
+    genuinely non-compliant client under a protocol version that DOES require the header (a
+    real but different-shaped issue than an active value conflict). This rule intentionally
+    does not attempt to re-derive protocol-version gating itself -- it trusts the already-
+    computed mcp.validation.*.result field, which is why a genuinely compatible case
+    (result = "version_incompatible") never appears here, only in the primary rule's absence.
+references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning
+author: MCP Protocol-State Abuse Detection project
+date: 2026-09-13
+logsource:
+    category: application
+    product: mcp
+    service: mcp_security_audit
+detection:
+    selection_event:
+        event.name: mcp.request.validation
+    selection_missing:
+        mcp.validation.method.result:
+            - missing
+            - malformed
+    selection_missing_alt:
+        mcp.validation.name.result:
+            - missing
+            - malformed
+    condition: selection_event and 1 of selection_missing*
+fields:
+    - jsonrpc.request.id
+    - mcp.protocol.version
+    - mcp.validation.source
+    - mcp.validation.reason
+falsepositives:
+    - A legitimate compatibility path that was incorrectly classified as "missing" instead of
+      "version_incompatible" by an under-implemented collector (this would itself be a
+      collector defect worth fixing, not a security event).
+    - A collector-derived (mcp.validation.source = collector_derived) blind spot where the
+      header genuinely arrived but was not captured.
+    - Transient client bugs during startup/reconnect.
+level: low
+tags:
+    - detection.threat-hunting
+# No MITRE ATT&CK tag: see mcp_task_routing_desynchronization.yml's rationale, which applies
+# equally here and more so, since this rule's evidence is weaker by design.

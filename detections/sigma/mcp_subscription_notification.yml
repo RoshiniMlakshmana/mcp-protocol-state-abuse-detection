@@ -1,0 +1,33 @@
+title: MCP Subscription Notification Delivered
+id: a6a99cb9-bdb7-4374-bfde-f834f96732e7
+name: mcp_subscription_notification
+status: experimental
+description: |
+    Component rule (not a standalone alert): fires on every mcp.subscription.notification
+    event, with no filtering on notification type or content. Used as one leg of
+    mcp_subscription_drift_correlation.yml. Deliberately unfiltered because the security
+    condition of interest is TIMING relative to authorization state, not the notification's
+    type or payload -- per docs/threat-model.md SS11, an ordinary
+    notifications/resources/updated delivery carries only a change/activity signal (a URI), not
+    protected resource contents, so this rule (and the correlation built on it) must not be
+    read as asserting content exposure.
+references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions
+author: MCP Protocol-State Abuse Detection project
+date: 2026-09-13
+logsource:
+    category: application
+    product: mcp
+    service: mcp_security_audit
+detection:
+    selection:
+        event.name: mcp.subscription.notification
+    condition: selection
+fields:
+    - mcp.subscription.id
+    - principal.id_hash
+    - mcp.subscription.notification_type
+    - mcp.subscription.notification.resource_uri_hash
+level: informational
+tags:
+    - detection.threat-hunting

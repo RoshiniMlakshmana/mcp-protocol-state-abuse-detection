@@ -1,0 +1,43 @@
+title: MCP Subscription Authorization Change (Authoritative Timing)
+id: ab3c567d-6651-44a5-bd29-362cd4da4508
+name: mcp_subscription_authorization_change_authoritative
+status: experimental
+description: |
+    Component rule (not a standalone alert): fires on any mcp.subscription.authorization_change
+    event whose timing is authoritative (mcp.authz.change.timing_confidence = "authoritative",
+    i.e. mcp.authz.change.effective_at is present and sourced from the authorization server or
+    a policy engine). Used as one leg of mcp_subscription_drift_correlation.yml. Intentionally
+    excludes detected_only changes -- see docs/state-invariants.md row 11 and A15 in the Block 4
+    corpus for why a detected_only timing must not be treated as equivalent to an authoritative
+    one.
+    BLOCK 6 FIX (docs/validation-report.md, fixture V5-03): also restricted to change types that
+    actually invalidate authorization (revoked, expired, scope_downgraded). A "scope_upgraded"
+    change (a renewal/expansion of access) is NOT invalidating and must never be treated as one
+    -- the original selection had no type filter at all and false-positived on a legitimate,
+    authoritative renewal.
+references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
+author: MCP Protocol-State Abuse Detection project
+date: 2026-09-13
+logsource:
+    category: application
+    product: mcp
+    service: mcp_security_audit
+detection:
+    selection:
+        event.name: mcp.subscription.authorization_change
+        mcp.authz.change.timing_confidence: authoritative
+        mcp.authz.change.type:
+            - revoked
+            - expired
+            - scope_downgraded
+    condition: selection
+fields:
+    - principal.id_hash
+    - mcp.authz.change.type
+    - mcp.authz.change.source
+    - mcp.authz.change.effective_at
+level: informational
+tags:
+    - detection.threat-hunting

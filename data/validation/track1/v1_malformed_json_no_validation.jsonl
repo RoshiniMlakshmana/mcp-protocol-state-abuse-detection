@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-01T09:20:00.000Z","event.name":"mcp.request.received","event.category":"network","mcp.protocol.version":"2026-07-28","mcp.transport":"streamable-http","rpc.system.name":"jsonrpc","jsonrpc.request.id":"5","http.request.method":"POST"}
+{"timestamp":"2026-10-01T09:20:00.002Z","event.name":"mcp.response","event.category":"network","mcp.protocol.version":"2026-07-28","mcp.transport":"streamable-http","event.outcome":"failure","jsonrpc.request.id":"5","rpc.status_code":"-32700","error.type":"ParseError","http.response.status_code":400}

@@ -1,0 +1,36 @@
+// MCP Cross-Principal Task Authorization Violation (Track 2)
+//
+// HYPOTHETICAL TABLE: MCPSecurityAudit. Does not exist in Sentinel by default -- see
+// detections/field-mapping.md.
+//
+// Sigma equivalent: detections/sigma/mcp_cross_principal_task_authorization.yml
+//
+// Relies entirely on server-side authorization evidence (mcp.authz.decision/reason). Never
+// filters or infers from rpc.status_code / http.response.status_code, since a denied request
+// against an existing-but-unauthorized task and a request against a genuinely nonexistent task
+// both typically surface the same -32602 response (SEP-2663's anti-enumeration design,
+// docs/threat-model.md SS10) -- that ambiguity is exactly why this must be a server-side-
+// evidence filter, not a response-code filter. A null mcp.task.authz_context_id_hash is
+// deliberately NOT part of the filter in either direction -- it is included only as
+// investigation context.
+MCPSecurityAudit
+| where ['event.name'] == "mcp.task.authorization"
+| where ['mcp.authz.decision'] == "deny"
+| where ['mcp.authz.reason'] == "principal_mismatch"
+// Excludes, by construction (not by an explicit "!=" filter you could forget to update):
+//   mcp.authz.reason in ("policy_denied", "insufficient_scope", "context_unbound", "unknown")
+// -- ordinary denials that are not cross-principal task misuse.
+| extend Severity = "High", DetectionTrack = "Track2_CrossPrincipalTaskAuthorization"
+| project
+    ['timestamp'],
+    Severity,
+    DetectionTrack,
+    ['principal.id_hash'],
+    ['principal.authenticated'],
+    ['mcp.task.id_hash'],
+    ['mcp.task.authz_context_id_hash'],
+    ['mcp.task.operation'],
+    ['mcp.authz.decision'],
+    ['mcp.authz.reason'],
+    ['mcp.authz.policy_version']
+| order by ['timestamp'] asc

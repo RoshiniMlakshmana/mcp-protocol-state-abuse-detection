@@ -1,0 +1,26 @@
+{
+  "name": "mcp-protocol-state-abuse-detection",
+  "version": "1.0.0",
+  "description": "Sigma/KQL/SPL detections, threat model, telemetry contract, and deterministic test corpora for MCP protocol-state abuse (task routing desync, cross-principal task authorization, long-lived subscription authorization drift).",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "node --test tests/normal/*.test.js tests/attack/*.test.js tests/detections/*.test.js tests/validation/*.test.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "detection-engineering",
+    "sigma",
+    "kql",
+    "spl",
+    "security"
+  ],
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "dependencies": {
+    "js-yaml": "^5.4.1"
+  }
+}

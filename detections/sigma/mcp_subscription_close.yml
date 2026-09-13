@@ -1,0 +1,32 @@
+title: MCP Subscription Closed
+id: 1a04908e-8377-4a2c-bb24-597e2488dd55
+name: mcp_subscription_close
+status: experimental
+description: |
+    Component/hunting rule (not a standalone security alert): fires on every
+    mcp.subscription.close event. Provided for analyst triage of a
+    mcp_subscription_drift_correlation.yml hit -- when investigating a correlation match, check
+    whether a close event for the same mcp.subscription.id exists at or before the flagged
+    notification's timestamp. The current Sigma correlation specification has no mechanism to
+    express that "absence of an intervening event" check directly (see
+    detections/README.md, "Sigma limitations"), so this rule exists to support manual/SOAR
+    follow-up rather than to complete the correlation automatically.
+references:
+    - https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions
+author: MCP Protocol-State Abuse Detection project
+date: 2026-09-13
+logsource:
+    category: application
+    product: mcp
+    service: mcp_security_audit
+detection:
+    selection:
+        event.name: mcp.subscription.close
+    condition: selection
+fields:
+    - mcp.subscription.id
+    - principal.id_hash
+    - mcp.subscription.close.reason
+level: informational
+tags:
+    - detection.threat-hunting

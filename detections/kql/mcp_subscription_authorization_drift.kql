@@ -1,0 +1,117 @@
+// MCP Long-Lived Subscription Authorization Drift (Track 3)
+//
+// HYPOTHETICAL TABLE: MCPSecurityAudit. Does not exist in Sentinel by default -- see
+// detections/field-mapping.md.
+//
+// This is the AUTHORITATIVE implementation of Track 3 (the Sigma correlation in
+// detections/sigma/mcp_subscription_drift_correlation.yml cannot faithfully express this --
+// see that file's description and detections/README.md for why). This query performs real
+// multi-event temporal correlation and explicitly encodes all four parts of the locked
+// condition:
+//   1. a subscription exists and is/was active,
+//   2. authorization became invalid (authoritative revocation effective_at, OR silent expiry
+//      via mcp.authz.valid_until when no revocation event exists at all),
+//   3. a notification was delivered strictly AFTER that boundary,
+//   4. no mcp.subscription.close event exists at or before that notification's timestamp.
+//
+// detected_at-only timing (mcp.authz.change.timing_confidence = "detected_only") is
+// deliberately NEVER promoted into the high-confidence result set -- see the separate,
+// clearly-labeled low-confidence/informational section at the bottom.
+
+// BLOCK 6 FIX (docs/validation-report.md, fixture V5-03): only change TYPES that actually
+// invalidate authorization count as a boundary. "scope_upgraded" (a renewal/expansion of
+// access) must never be treated as invalidating -- the original query ignored change type
+// entirely and false-positived on a legitimate renewal that happened to be authoritative.
+let AuthoritativeChanges = MCPSecurityAudit
+| where ['event.name'] == "mcp.subscription.authorization_change"
+| where ['mcp.authz.change.timing_confidence'] == "authoritative"
+| where ['mcp.authz.change.type'] in ("revoked", "expired", "scope_downgraded")
+| project
+    principal_hash = ['principal.id_hash'],
+    effective_at = todatetime(['mcp.authz.change.effective_at']),
+    change_type = ['mcp.authz.change.type'],
+    change_source = ['mcp.authz.change.source'];
+
+let ExpiryBoundaries = MCPSecurityAudit
+| where ['event.name'] == "mcp.subscription.open"
+| where isnotempty(['mcp.authz.valid_until'])
+| project
+    subscription_id = tostring(['mcp.subscription.id']),
+    principal_hash = ['principal.id_hash'],
+    valid_until = todatetime(['mcp.authz.valid_until']);
+
+let Notifications = MCPSecurityAudit
+| where ['event.name'] == "mcp.subscription.notification"
+| project
+    subscription_id = tostring(['mcp.subscription.id']),
+    principal_hash = ['principal.id_hash'],
+    notif_time = todatetime(['timestamp']),
+    notification_type = ['mcp.subscription.notification_type'];
+
+let Closes = MCPSecurityAudit
+| where ['event.name'] == "mcp.subscription.close"
+| project
+    subscription_id = tostring(['mcp.subscription.id']),
+    close_time = todatetime(['timestamp']);
+
+// Notifications that already have a valid close at or before them -- these must be excluded
+// from every violation leg below (condition #4).
+let ClosedBeforeNotification = Notifications
+| join kind=leftouter (Closes) on subscription_id
+| where isnotempty(close_time) and close_time <= notif_time
+| distinct subscription_id, notif_time;
+
+// Leg A: authoritative revocation drift (Block 4 A12, A14 -- and A16 correctly produces none,
+// since A16's close precedes its only post-revocation-candidate window).
+let RevocationDrift = Notifications
+| join kind=inner (AuthoritativeChanges) on principal_hash
+| where notif_time > effective_at
+| join kind=leftanti (ClosedBeforeNotification) on subscription_id, notif_time
+| extend Confidence = "high", Boundary = "effective_at", BoundaryTime = effective_at,
+         AuthzChangeType = change_type, AuthzChangeSource = change_source;
+
+// Leg B: silent expiry drift (Block 4 A13 -- no authorization_change event exists at all).
+let ExpiryDrift = Notifications
+| join kind=inner (ExpiryBoundaries) on subscription_id, principal_hash
+| where notif_time > valid_until
+| join kind=leftanti (ClosedBeforeNotification) on subscription_id, notif_time
+| extend Confidence = "high", Boundary = "valid_until", BoundaryTime = valid_until,
+         AuthzChangeType = "expired", AuthzChangeSource = "token_expiry_computed";
+
+let HighConfidenceDrift = RevocationDrift
+| project subscription_id, principal_hash, notif_time, notification_type, Confidence, Boundary, BoundaryTime, AuthzChangeType, AuthzChangeSource
+| union (ExpiryDrift | project subscription_id, principal_hash, notif_time, notification_type, Confidence, Boundary, BoundaryTime, AuthzChangeType, AuthzChangeSource);
+
+HighConfidenceDrift
+| extend Severity = "High", DetectionTrack = "Track3_SubscriptionAuthorizationDrift"
+| project
+    notif_time,
+    Severity,
+    DetectionTrack,
+    subscription_id,
+    principal_hash,
+    notification_type,
+    Boundary,
+    BoundaryTime,
+    AuthzChangeType,
+    AuthzChangeSource,
+    Confidence
+| order by notif_time asc
+
+// -----------------------------------------------------------------------------------------
+// LOW-CONFIDENCE / INFORMATIONAL ONLY -- detected_at-only timing (Block 4 A15).
+// Per the locked timing-confidence model, a notification observed after detected_at (with no
+// authoritative effective_at anywhere) is NOT promoted to a high-confidence Track 3 verdict:
+// the true change moment is unknown and could be before or after the notification. This
+// section is provided for hunting/context; it must not be merged into the query above.
+// -----------------------------------------------------------------------------------------
+// let DetectedOnlyChanges = MCPSecurityAudit
+// | where ['event.name'] == "mcp.subscription.authorization_change"
+// | where ['mcp.authz.change.timing_confidence'] == "detected_only"
+// | where ['mcp.authz.change.type'] in ("revoked", "expired", "scope_downgraded")  // Block 6 fix, see above
+// | project principal_hash = ['principal.id_hash'], detected_at = todatetime(['mcp.authz.change.detected_at']);
+// Notifications
+// | join kind=inner (DetectedOnlyChanges) on principal_hash
+// | where notif_time > detected_at
+// | join kind=leftanti (ClosedBeforeNotification) on subscription_id, notif_time
+// | extend Confidence = "low", Note = "detected_at-only; true revocation time unknown -- do not treat as a confirmed violation"

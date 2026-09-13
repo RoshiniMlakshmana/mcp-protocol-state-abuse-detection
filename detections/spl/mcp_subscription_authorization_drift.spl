@@ -1,0 +1,123 @@
+```
+MCP Long-Lived Subscription Authorization Drift (Track 3)
+
+Placeholder source: index=mcp_security_audit sourcetype=mcp:audit:json -- not shipped by
+Splunk by default. See detections/field-mapping.md.
+
+This is the AUTHORITATIVE implementation of Track 3 (the Sigma correlation in
+detections/sigma/mcp_subscription_drift_correlation.yml cannot faithfully express this -- see
+that file and detections/README.md for why). Encodes all four parts of the locked condition:
+  1. a subscription exists and is/was active,
+  2. authorization became invalid (authoritative revocation effective_at, OR silent expiry via
+     mcp.authz.valid_until when no revocation event exists at all),
+  3. a notification was delivered strictly AFTER that boundary,
+  4. no mcp.subscription.close event exists at or before that notification's timestamp.
+
+ORDERING MATTERS: this deliberately compares event timestamps/field values with real
+inequality logic (notif_time > boundary_time, earliest_close_time > notif_time), not mere
+co-occurrence ("notification and revocation exist somewhere").
+
+ASSUMPTION: ingestion is configured (e.g. via props.conf TIME_PREFIX/TIME_FORMAT) so that
+Splunk's internal _time reflects each event's own `timestamp` field. The strptime() format
+string below assumes ISO-8601 with millisecond precision and a literal "Z" suffix
+(2026-09-05T10:10:00.000Z) for the *other* timestamp-valued fields carried inside the JSON
+payload (effective_at, valid_until) -- these are ordinary string field values, not _time, and
+must be parsed explicitly. Validate this format string against real ingested data; it has not
+been executed against a live Splunk instance in this project (see detections/README.md,
+"validation tooling used").
+
+detected_at-only timing (mcp.authz.change.timing_confidence = "detected_only") is deliberately
+NEVER promoted into this high-confidence search -- see the separate, clearly-labeled
+low-confidence search at the bottom.
+
+BLOCK 6 FIX (docs/validation-report.md, fixture V5-03): only mcp.authz.change.type values that
+actually invalidate authorization ("revoked", "expired", "scope_downgraded") are treated as a
+boundary. "scope_upgraded" (a renewal/expansion of access) is explicitly excluded -- the
+original search ignored change type entirely and false-positived on a legitimate renewal that
+happened to be authoritative.
+```
+
+`comment("Leg A: authoritative revocation drift (Block 4 A12, A14)")`
+index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.notification"
+| rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
+    "mcp.subscription.notification_type" as notification_type
+| eval notif_time=_time
+| join type=inner principal_hash
+    [ search index=mcp_security_audit sourcetype=mcp:audit:json
+        "event.name"="mcp.subscription.authorization_change"
+        "mcp.authz.change.timing_confidence"="authoritative"
+        ("mcp.authz.change.type"="revoked" OR "mcp.authz.change.type"="expired" OR "mcp.authz.change.type"="scope_downgraded")
+      | rename "principal.id_hash" as principal_hash,
+          "mcp.authz.change.type" as change_type, "mcp.authz.change.source" as change_source
+      | eval effective_at=strptime('mcp.authz.change.effective_at', "%Y-%m-%dT%H:%M:%S.%3QZ")
+      | fields principal_hash effective_at change_type change_source ]
+| where notif_time > effective_at
+| join type=left subscription_id
+    [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
+      | rename "mcp.subscription.id" as subscription_id
+      | eval close_time=_time
+      | stats min(close_time) as earliest_close_time by subscription_id ]
+| where isnull(earliest_close_time) OR earliest_close_time > notif_time
+| eval Boundary="effective_at", BoundaryTime=strftime(effective_at, "%Y-%m-%dT%H:%M:%S.%3QZ")
+| eval Confidence="high"
+| table notif_time subscription_id principal_hash notification_type Boundary BoundaryTime
+    change_type change_source Confidence
+| append
+    [ `comment("Leg B: silent expiry drift (Block 4 A13 -- no authorization_change event exists at all)")`
+      search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.notification"
+      | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
+          "mcp.subscription.notification_type" as notification_type
+      | eval notif_time=_time
+      | join type=inner subscription_id
+          [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.open"
+              "mcp.authz.valid_until"=*
+            | rename "mcp.subscription.id" as subscription_id
+            | eval valid_until=strptime('mcp.authz.valid_until', "%Y-%m-%dT%H:%M:%S.%3QZ")
+            | fields subscription_id valid_until ]
+      | where notif_time > valid_until
+      | join type=left subscription_id
+          [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
+            | rename "mcp.subscription.id" as subscription_id
+            | eval close_time=_time
+            | stats min(close_time) as earliest_close_time by subscription_id ]
+      | where isnull(earliest_close_time) OR earliest_close_time > notif_time
+      | eval Boundary="valid_until", BoundaryTime=strftime(valid_until, "%Y-%m-%dT%H:%M:%S.%3QZ")
+      | eval change_type="expired", change_source="token_expiry_computed", Confidence="high"
+      | table notif_time subscription_id principal_hash notification_type Boundary BoundaryTime
+          change_type change_source Confidence ]
+| eval Severity="High", DetectionTrack="Track3_SubscriptionAuthorizationDrift"
+| sort 0 notif_time
+
+```
+---------------------------------------------------------------------------------------------
+LOW-CONFIDENCE / INFORMATIONAL ONLY -- detected_at-only timing (Block 4 A15). Per the locked
+timing-confidence model, a notification observed after detected_at (with no authoritative
+effective_at anywhere) is NOT promoted to a high-confidence Track 3 verdict: the true change
+moment is unknown and could be before or after the notification. Kept as a separate saved
+search for hunting/context; never merged into the primary search above.
+---------------------------------------------------------------------------------------------
+
+index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.notification"
+| rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
+    "mcp.subscription.notification_type" as notification_type
+| eval notif_time=_time
+| join type=inner principal_hash
+    [ search index=mcp_security_audit sourcetype=mcp:audit:json
+        "event.name"="mcp.subscription.authorization_change"
+        "mcp.authz.change.timing_confidence"="detected_only"
+        ("mcp.authz.change.type"="revoked" OR "mcp.authz.change.type"="expired" OR "mcp.authz.change.type"="scope_downgraded")
+      | rename "principal.id_hash" as principal_hash
+      | eval detected_at=strptime('mcp.authz.change.detected_at', "%Y-%m-%dT%H:%M:%S.%3QZ")
+      | fields principal_hash detected_at ]
+| where notif_time > detected_at
+| join type=left subscription_id
+    [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
+      | rename "mcp.subscription.id" as subscription_id
+      | eval close_time=_time
+      | stats min(close_time) as earliest_close_time by subscription_id ]
+| where isnull(earliest_close_time) OR earliest_close_time > notif_time
+| eval Confidence="low"
+| eval Note="detected_at-only; true revocation time unknown -- do not treat as a confirmed violation"
+| table notif_time subscription_id principal_hash notification_type Confidence Note
+| sort 0 notif_time
+```
