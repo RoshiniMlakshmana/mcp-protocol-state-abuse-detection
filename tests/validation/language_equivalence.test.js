@@ -80,6 +80,20 @@ test('Track 2: Sigma, KQL, SPL agree on every one of the 68 stress-corpus scenar
 // affected_scope=all_principal_bindings with a PRECISE effective-time interval check (fixture
 // V13-06): a binding only counts if it was already open, and not yet closed, at the moment the
 // change took effect.
+//
+// CORRECTION (Track 3 remediation pass, part 4): an earlier revision of splModelResults' scope_
+// downgraded relevance check computed a full, exact, order-independent multivalue intersection
+// (`rem.filter((s) => req.indexOf(s) >= 0)`) even though the REAL SPL query it claims to model
+// (detections/spl/mcp_subscription_authorization_drift.spl) only ever compared the FIRST element
+// of each side (mvindex(field,0)) via an unanchored regex. The model was accidentally MORE
+// CORRECT than the query it was supposed to represent -- silently hiding the real query's first-
+// tag/substring-match defect from every equivalence test in this file, since no multi-tag fixture
+// previously existed to surface the gap. The real SPL query is now fixed to match this model's
+// exact-intersection logic (fixtures V14-01..V14-08); the model itself did not need its
+// intersection logic changed, only its missing-vs-empty-evidence check (see the comment beside
+// it, and fixture V14-07) to honestly reflect a genuine SPL/Splunk platform constraint the fix
+// could not remove. Recorded here so this specific kind of hidden discrepancy -- a hand-written
+// model quietly outperforming the query it is supposed to mirror -- does not recur unnoticed.
 function legacyBindingId(principalHash, subId) {
   return `legacy:${principalHash}:${subId === undefined ? '(none)' : subId}`;
 }
@@ -230,7 +244,15 @@ function splModelResults(events) {
         if (applies === 'ambiguous') { priorities.push([2, 'InsufficientEvidence']); continue; }
         if (c['mcp.authz.change.type'] === 'scope_downgraded') {
           const req = requiredScopeOf[iid], rem = c['mcp.authz.change.removed_scope'];
-          if (!req || !rem) { priorities.push([2, 'InsufficientEvidence']); continue; }
+          // SPL-SPECIFIC: classic Splunk field extraction has no way to represent "field present
+          // with an explicitly empty value list" distinct from "field absent" (unlike KQL's
+          // dynamic([]), which isempty() reports as NOT empty -- see kqlModelResults above, which
+          // correctly treats an empty array as present). An explicitly-empty req/rem therefore
+          // collapses to the SAME missing-evidence outcome as a genuinely absent field on this
+          // platform -- fixture V14-07, a documented, intentional SPL-only divergence from KQL,
+          // not an approximation in this model's intersection logic (which is otherwise exact and
+          // order-independent, matching the fixed detections/spl/...spl query).
+          if (!req || req.length === 0 || !rem || rem.length === 0) { priorities.push([2, 'InsufficientEvidence']); continue; }
           if (rem.filter((s) => req.indexOf(s) >= 0).length === 0) { priorities.push([1, 'EvaluatedNoViolation']); continue; }
         }
         priorities.push([3, 'ConfirmedDrift']);
@@ -261,17 +283,32 @@ function byInstance(results) {
   return new Map(results.map((r) => [`${r.instanceId}|${r.notifTime}`, r.outcome]));
 }
 
-test('Track 3: independently-coded KQL-model and SPL-model outcomes agree on every notification across the full stress corpus', () => {
+test('Track 3: independently-coded KQL-model and SPL-model outcomes agree on every notification across the full stress corpus, except one NAMED, documented platform divergence (V14-07)', () => {
+  // V14-07 is an INTENTIONAL, documented exception, not a defect: it tests an explicitly-empty
+  // (not absent) required_scope, which KQL's dynamic type can represent distinctly from "absent"
+  // (isempty(dynamic([]))===false, verified against Kusto's documentation) but classic Splunk
+  // field extraction genuinely cannot (see the comment above splModelResults' scope_downgraded
+  // branch, and detections/spl/mcp_subscription_authorization_drift.spl's header). Excluding it
+  // here, by name, is itself the honest disclosure -- silently passing it would misrepresent a
+  // real platform gap as verified equivalence; silently including it in a "must be zero" count
+  // would fail a test over a difference this project cannot fix in SPL.
+  const KNOWN_DIVERGENT_SCENARIOS = new Set(['V14-07']);
   const rows = loadFullStressCorpus();
   let disagreements = 0;
+  const unexpectedDisagreements = [];
   for (const row of rows) {
     const kql = byInstance(kqlModelResults(row.events));
     const spl = byInstance(splModelResults(row.events));
     for (const [key, outcome] of kql) {
-      if (spl.get(key) !== outcome) { disagreements++; console.log(`OUTCOME DISAGREEMENT on ${row.scenario_id} ${key}: kql=${outcome} spl=${spl.get(key)}`); }
+      if (spl.get(key) !== outcome) {
+        disagreements++;
+        console.log(`OUTCOME DISAGREEMENT on ${row.scenario_id} ${key}: kql=${outcome} spl=${spl.get(key)}`);
+        if (!KNOWN_DIVERGENT_SCENARIOS.has(row.scenario_id)) unexpectedDisagreements.push(row.scenario_id);
+      }
     }
   }
-  assert.equal(disagreements, 0);
+  assert.equal(disagreements, 1, 'expected exactly the one named, documented V14-07 divergence');
+  assert.deepEqual(unexpectedDisagreements, [], 'no UNDOCUMENTED KQL/SPL disagreement may exist anywhere in the corpus');
 });
 
 test('Track 3: the scope-aware corrected model diverges from the pre-correction (principal-only) model wherever the correction actually matters', () => {

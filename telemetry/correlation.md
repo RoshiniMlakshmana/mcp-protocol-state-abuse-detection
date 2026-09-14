@@ -127,17 +127,21 @@ assumption of safety.
 - `mcp.authz.binding_id` — the authorization binding backing an instance, set at `.open` and
   optionally overridden per-`.notification` (proof of rebinding, see "Validity intervals"
   below). Legacy `.open` events lacking it are treated as an internal-only pseudo-binding scoped
-  to `(principal.id_hash, mcp.subscription.id)` — see "Sole-candidate fallback" below for the
-  one case this may be used safely.
+  to `(principal.id_hash, mcp.subscription.id)`.
 - `principal.id_hash` — appears on `.open`, `.notification`, and `.authorization_change`. It is
-  what lets a change event's `affected_scope = all_principal_bindings` be resolved (by scanning
-  every binding *observed* for that principal), and what lets the sole-candidate fallback find
-  candidates at all. It is **not**, by itself, sufficient to scope a `binding`-level change.
+  what lets a change event's `affected_scope = all_principal_bindings` be resolved (by checking
+  every binding open, and not yet closed, at `effective_at` for that principal — see "Resolving
+  affected bindings" below). It is **not**, by itself, sufficient to scope a `binding`-level
+  change, and it is **not** used to guess a binding for `unknown`-scoped changes (see below).
 - `mcp.authz.change.affected_scope` / `affected_binding_ids` — states which binding(s) a change
   affects. `binding` + a populated `affected_binding_ids` is the precise, no-ambiguity case.
   `all_principal_bindings` is the only case permitted to broaden past named bindings. `unknown`
-  (or the field's absence, for legacy events) triggers the sole-candidate fallback, never a
-  blanket principal-wide assumption.
+  (or the field's absence, for legacy events) ALWAYS resolves to `insufficient_evidence` when
+  timing would otherwise indicate a violation — **never** inferred from how many candidate
+  bindings happen to be observed for the principal, even when there is exactly one (an earlier
+  revision of this contract permitted that "sole-candidate" inference; it was found to be an
+  unsupported inference, not evidence, and was removed — see "Resolving affected bindings" below
+  and `docs/validation-report.md`, "Track 3 remediation pass, part 3").
 - `mcp.subscription.required_scope` / `mcp.authz.change.removed_scope` — for
   `mcp.authz.change.type = scope_downgraded` specifically: even a change that correctly names an
   instance's own binding does not invalidate it unless the removed scope intersects the
@@ -162,21 +166,25 @@ For each `mcp.subscription.authorization_change` event:
 
 1. If `affected_scope = binding`: the affected set is exactly `affected_binding_ids`.
 2. If `affected_scope = all_principal_bindings`: the affected set is every `mcp.authz.binding_id`
-   **observed** (via `.open` or a later proven-rebinding `.notification`) for this
-   `principal.id_hash`, restricted to bindings that were valid at some point at or before
-   `effective_at`. This is the only path allowed to broaden past a specific binding, and it
+   that was **already open, and not yet closed, at the moment `effective_at` occurred** — a
+   PRECISE effective-time interval check, not "ever observed anywhere in the queried window" (an
+   earlier revision of this contract used that looser approximation; a binding issued for the
+   same principal *after* `effective_at` did not exist yet at the moment of the change and cannot
+   be covered by it — see `docs/validation-report.md`, "Track 3 remediation pass, part 3",
+   fixture V13-06). This is the only path allowed to broaden past a specific binding, and it
    requires the change event to say so explicitly — it is never the default.
-3. If `affected_scope = unknown`, or the field is absent (legacy event): apply the
-   **sole-candidate fallback** — gather every candidate binding known for this principal that
-   was open (not yet closed) at `effective_at`. If exactly one candidate exists, resolve to it
-   (this is elimination, not an assumption — there was nothing else it could mean). If more than
-   one candidate exists, the affected set is **indeterminate**: report `insufficient_evidence`
-   for every candidate, never guess by picking the "obvious" one. If zero candidates exist (no
-   retained `.open` event for this principal at all), the change still applies to any
-   `.notification`/`.close` events that **explicitly** carry a matching `mcp.authz.binding_id`
-   of their own (directly-scoped invalidation needs no retained open event); absent that, there
-   is nothing to resolve and the change produces no finding (not insufficient evidence — there is
-   simply no observed stream it could apply to).
+3. If `affected_scope = unknown`, or the field is absent (legacy event): the affected set is
+   **indeterminate, always** — report `insufficient_evidence` (`ambiguous_scope`) whenever timing
+   would otherwise indicate a violation. This holds **regardless of how many candidate bindings
+   happen to be observed for the principal, including exactly one** — a candidate count is not
+   evidence of which binding a change applies to, and inferring one from it (an earlier revision
+   of this contract permitted exactly this "sole-candidate fallback") was found to be an
+   unsupported inference and removed (`docs/validation-report.md`, "Track 3 remediation pass,
+   part 3", fixture V13-03). The only way an `unknown`-scoped change still produces a finding is
+   if a `.notification`/`.close` event **explicitly** carries a matching `mcp.authz.binding_id` of
+   its own (directly-scoped invalidation needs no retained open event and no scope inference at
+   all); absent that, there is nothing to resolve and the change produces no finding for that
+   instance (not insufficient evidence — there is simply no observed stream it could apply to).
 
 For `mcp.authz.change.type = scope_downgraded` specifically, a binding in the affected set is
 only actually invalidated for a given instance if `removed_scope` intersects that instance's
@@ -211,11 +219,12 @@ each other so reduced evaluability can never masquerade as clean detection:
   violation was found (before the boundary, a close intervened, a downgrade's removed scope did
   not intersect the instance's required scope, the change type does not invalidate, or the
   notification is proven-rebound to a separate, still-valid binding).
-- **`insufficient_evidence`** — resolution could not be completed: ambiguous scope (more than one
-  sole-candidate binding), missing scope data needed for a downgrade-relevance check, conflicting
-  evidence (two authoritative signals about the same binding that cannot both be true), an
-  incompatible hash-key epoch between compared events, or `detected_at`-only timing with no
-  authoritative boundary available.
+- **`insufficient_evidence`** — resolution could not be completed: `unknown`/legacy scope with
+  timing that would otherwise indicate a violation, missing scope data needed for a
+  downgrade-relevance check, conflicting evidence (two authoritative signals about the same
+  binding that cannot both be true), an incompatible hash-key epoch between compared events, a
+  self-contradictory record (authoritative timing claimed with no `effective_at`), or
+  `detected_at`-only timing with no authoritative boundary available.
 
 If content sensitivity matters for triage, also read
 `mcp.subscription.notification.contains_inline_result` and `notification_type` — per Block 1

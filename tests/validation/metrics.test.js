@@ -23,21 +23,21 @@ test('Track 3 coverage report (mechanically computed): confirmed_drift / evaluat
   console.log('insufficient_evidence reasons:', reasons);
   // Pinned so a change to this count is a deliberate, reviewed decision (new fixture, or a real
   // resolver change), not a silent drift -- see docs/validation-report.md for the full breakdown.
-  assert.equal(total, 61);
-  assert.equal(confirmed, 27);
-  assert.equal(noViolation, 24);
-  assert.equal(insufficient, 10);
+  assert.equal(total, 69);
+  assert.equal(confirmed, 31);
+  assert.equal(noViolation, 27);
+  assert.equal(insufficient, 11);
   assert.deepEqual(reasons, {
-    ambiguous_scope: 5, no_invalidity_evidence: 1, missing_scope_evidence: 1,
+    ambiguous_scope: 5, no_invalidity_evidence: 1, missing_scope_evidence: 2,
     conflicting_evidence: 1, incompatible_hash_epoch: 1, incomplete_timing_evidence: 1,
   });
 });
 
-test('Block 6 corpus sanity: 67 scenarios, 319 events, separate from Block 3/4 on disk', () => {
+test('Block 6 corpus sanity: 75 scenarios, 351 events, separate from Block 3/4 on disk', () => {
   const rows = loadValidationCorpus();
-  assert.equal(rows.length, 67);
+  assert.equal(rows.length, 75);
   const totalEvents = rows.reduce((n, r) => n + r.events.length, 0);
-  assert.equal(totalEvents, 319);
+  assert.equal(totalEvents, 351);
   const fs = require('fs');
   const path = require('path');
   const normalDir = path.join(__dirname, '..', '..', 'data', 'normal');
@@ -65,13 +65,13 @@ test('CURATED CORE (Block 3 + Block 4, 31 scenarios): per-track metrics', () => 
   assert.equal(r3.fn, 0); assert.equal(r3.fp, 0);
 });
 
-test('FULL STRESS-TEST CORPUS (Block 3 + 4 + 6, 98 scenarios): per-track metrics -- NOT a real-world performance claim', () => {
+test('FULL STRESS-TEST CORPUS (Block 3 + 4 + 6, 106 scenarios): per-track metrics -- NOT a real-world performance claim', () => {
   const rows = loadFullStressCorpus();
-  assert.equal(rows.length, 98, '31 curated + 67 Block 6 validation scenarios');
+  assert.equal(rows.length, 106, '31 curated + 75 Block 6 validation scenarios');
   const r1 = evaluate(rows, track1PrimaryFires, 'expected1');
   const r2 = evaluate(rows, track2Fires, 'expected2');
   const r3 = evaluate(rows.filter((r) => !r.experimental), track3PrimaryFires, 'expected3');
-  console.log('\n=== FULL STRESS-TEST CORPUS (n=98) -- controlled-corpus correctness only ===');
+  console.log('\n=== FULL STRESS-TEST CORPUS (n=106) -- controlled-corpus correctness only ===');
   console.log(formatReport('Track 1', r1));
   console.log(formatReport('Track 2', r2));
   console.log(formatReport('Track 3', r3));
@@ -149,6 +149,7 @@ test('Track 3 required-behavior spot checks across the full validation corpus', 
     'V11-05', 'V11-07', 'V11-08', 'V11-09', 'V11-11',
     'V12-03', 'V12-06', 'V12-09', 'V12-10', 'V12-11',
     'V13-02', 'V13-03', 'V13-04', 'V13-05',
+    'V14-04', 'V14-05', 'V14-06', 'V14-07',
   ];
   for (const id of mustNotFire) {
     const r = rows.find((x) => x.scenario_id === id);
@@ -159,6 +160,7 @@ test('Track 3 required-behavior spot checks across the full validation corpus', 
     'V11-01', 'V11-02', 'V11-03', 'V11-04', 'V11-06', 'V11-10',
     'V12-01', 'V12-02', 'V12-04', 'V12-05', 'V12-07', 'V12-08', 'V12-12', 'V12-13',
     'V13-01', 'V13-06',
+    'V14-01', 'V14-02', 'V14-03', 'V14-08',
   ];
   for (const id of mustFire) {
     const r = rows.find((x) => x.scenario_id === id);

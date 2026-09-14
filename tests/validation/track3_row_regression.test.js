@@ -206,6 +206,70 @@ test('V13-06 (precise effective-time interval): an all_principal_bindings revoca
 });
 
 // ---------------------------------------------------------------------------------------------
+// V14-01..V14-08: exact, order-independent multivalue scope intersection (Track 3 remediation
+// pass, part 4). See docs/validation-report.md and detections/spl/mcp_subscription_authorization_
+// drift.spl's header for the fixed first-scope-tag-only approximation this batch targets.
+// ---------------------------------------------------------------------------------------------
+
+test('V14-01 (exact intersection #1): overlap at the LAST position of both scope lists, not the first, still confirms', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(byId('V14-01').events);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].outcome, 'confirmed_drift');
+});
+
+test('V14-02 (exact intersection #2): the same overlap reordered to the FIRST position produces the identical outcome as V14-01', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(byId('V14-02').events);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].outcome, 'confirmed_drift');
+});
+
+test('V14-03 (exact intersection #3): a duplicate tag in required_scope confirms exactly ONCE, not zero or twice', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(byId('V14-03').events);
+  assert.equal(results.length, 1, 'duplicate tags must not multiply alert rows');
+  assert.equal(results[0].outcome, 'confirmed_drift');
+});
+
+test('V14-04 (exact intersection #4): genuinely disjoint scope lists produce evaluated_no_violation', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(byId('V14-04').events);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].outcome, 'evaluated_no_violation');
+});
+
+test('V14-05 (exact intersection #5): "files:read" and "files:read_all" are different, complete scope strings -- a prefix/substring is never a match', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(byId('V14-05').events);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].outcome, 'evaluated_no_violation', 'must not treat "files:read" as matching inside "files:read_all"');
+});
+
+test('V14-06 (missing scope evidence, contrast with V14-07): an entirely absent required_scope reports insufficient_evidence', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const { results, coverage } = track3Resolution(byId('V14-06').events);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].outcome, 'insufficient_evidence');
+  assert.equal(results[0].reason, 'missing_scope_evidence');
+  assert.equal(coverage.insufficientEvidence, 1);
+});
+
+test('V14-07 (explicitly empty scope evidence, contrast with V14-06): a KNOWN empty required_scope is evaluated, not treated as missing, by the reference oracle', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(byId('V14-07').events);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].outcome, 'evaluated_no_violation', 'an explicitly-empty scope set has a computed, not assumed, empty intersection with anything -- this differs from the real SPL query, which cannot make this distinction (see tests/validation/language_equivalence.test.js)');
+});
+
+test('V14-08 (exact intersection #7): two independently-overlapping tags still produce exactly ONE alert row for the one notification', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(byId('V14-08').events);
+  assert.equal(results.length, 1, 'overlap is a boolean relevance gate, never a per-matching-tag row multiplier');
+  assert.equal(results[0].outcome, 'confirmed_drift');
+});
+
+// ---------------------------------------------------------------------------------------------
 // Proof that these regression tests actually catch a reintroduction of THREE named bugs:
 // join-key restoration (subscription_id-only close/expiry join), one-match (Splunk max=1
 // default) behavior, and the sole-candidate scope inference removed in this pass. Re-derives
@@ -287,4 +351,44 @@ test('RESTORED-BUG PROOF: a sole-candidate scope inference would wrongly confirm
     // The OLD, removed sole-candidate inference WOULD have confirmed it:
     assert.equal(oldBuggySoleCandidateInference(events, notif), true, `${id}: pre-fix sole-candidate inference would have wrongly confirmed this`);
   }
+});
+
+function oldBuggyFirstTagScopeMatch(requiredScope, removedScope) {
+  // PRE-FIX (Track 3 remediation pass, part 4): the real SPL query compared only the FIRST
+  // element of each multivalue field via an UNANCHORED mvfind() regex -- re-derived independently
+  // here as an unanchored JS substring check (an unanchored regex containing no metacharacters
+  // behaves as a substring search), not imported from the fixed intersection logic.
+  if (!requiredScope || !removedScope || requiredScope.length === 0 || removedScope.length === 0) return null;
+  const req0 = requiredScope[0], rem0 = removedScope[0];
+  const matchInRemoved = removedScope.some((tag) => tag.includes(req0));
+  const matchInRequired = requiredScope.some((tag) => tag.includes(rem0));
+  return matchInRemoved || matchInRequired;
+}
+
+test('RESTORED-BUG PROOF: a first-scope-tag-only comparison would MISS V14-01\'s real overlap (positional bug)', () => {
+  const events = byId('V14-01').events;
+  const open = events.find((e) => e['event.name'] === 'mcp.subscription.open');
+  const change = events.find((e) => e['event.name'] === 'mcp.subscription.authorization_change');
+  const requiredScope = open['mcp.subscription.required_scope'];
+  const removedScope = change['mcp.authz.change.removed_scope'];
+  // The FIXED oracle confirms (the real overlap, "files:read", sits last on both sides):
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(events);
+  assert.equal(results[0].outcome, 'confirmed_drift', 'fixed behavior: the exact intersection finds the overlap regardless of position');
+  // The OLD, first-tag-only comparison would have missed it entirely:
+  assert.equal(oldBuggyFirstTagScopeMatch(requiredScope, removedScope), false, 'pre-fix bug: comparing only mvindex(field,0) on each side never reaches "files:read" at position 2/1');
+});
+
+test('RESTORED-BUG PROOF: an unanchored first-tag comparison would WRONGLY MATCH V14-05\'s "files:read" inside "files:read_all" (substring bug)', () => {
+  const events = byId('V14-05').events;
+  const open = events.find((e) => e['event.name'] === 'mcp.subscription.open');
+  const change = events.find((e) => e['event.name'] === 'mcp.subscription.authorization_change');
+  const requiredScope = open['mcp.subscription.required_scope'];
+  const removedScope = change['mcp.authz.change.removed_scope'];
+  // The FIXED oracle correctly finds no match (these are two different, complete scope strings):
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(events);
+  assert.equal(results[0].outcome, 'evaluated_no_violation', 'fixed behavior: exact-string comparison finds no overlap');
+  // The OLD, unanchored comparison would have wrongly matched "files:read" as a substring of "files:read_all":
+  assert.equal(oldBuggyFirstTagScopeMatch(requiredScope, removedScope), true, 'pre-fix bug: an unanchored regex/substring match wrongly treats a shorter tag as matching inside a longer one that starts with it');
 });

@@ -25,6 +25,19 @@ affected_scope=all_principal_bindings with a PRECISE effective-time interval che
 only counts as one of "all bindings this principal held" if it was already open (and not yet
 closed) AT THE MOMENT the change took effect (fixture V13-06).
 
+TRACK 3 REMEDIATION PASS, PART 4 (this revision) fixes the one remaining documented SPL-only
+approximation: scope_downgraded relevance (removed_scope vs. required_scope) previously compared
+only the FIRST element of each multivalue field via an unanchored regex match, so it could miss a
+real overlap that wasn't in position zero (fixtures V14-01/V14-02) and could falsely match a short
+tag as a substring of an unrelated longer one, e.g. "files:read" inside "files:read_all" (fixture
+V14-05). Replaced with an exact, order-independent, anchored-literal-quoted multivalue
+intersection using mvmap()/mvfind() (syntax verified against Splunk's documented Multivalue eval
+functions reference) -- see the comment immediately above the rev_scope_ok computation below for
+the full mechanism, its one documented caveat, and the one platform limitation this pass could NOT
+resolve (fixture V14-07: Splunk's field model cannot distinguish an explicitly-empty scope list
+from an absent one, unlike KQL's dynamic type -- a genuine, named SPL/Splunk constraint, not a
+silently-swept-under approximation).
+
 THREE-OUTCOME REPORTING: every evaluated notification produces exactly one Outcome:
 ConfirmedDrift | EvaluatedNoViolation | InsufficientEvidence, with ConfirmedDrift taking
 precedence over InsufficientEvidence taking precedence over EvaluatedNoViolation. A legitimately
@@ -130,12 +143,14 @@ index=mcp_security_audit sourcetype=mcp:audit:json
     affected_scope2=="all_principal_bindings", if(binding_existed_at_effective_at=1 AND binding_already_closed_by_effective_at=0, "yes", "no"),
     affected_scope2=="binding", if(isnull(effective_binding_id), "ambiguous", if(mvfind(affected_binding_ids2, effective_binding_id)>=0, "yes", "no")),
     1=1, "ambiguous")
-`comment("SPL has no built-in set-intersection over two multivalue fields; this reference query checks whether EITHER side's first scope tag appears in the other -- correct for this project's single-tag fixtures, an approximation for genuinely multi-tag scopes. The JS oracle (tests/attack/track3util.js) implements the precise any-element intersection and remains the authority for that case.")`
+`comment("EXACT, order-independent multivalue scope intersection (Track 3 remediation pass, part 4 -- see docs/validation-report.md). A prior revision compared only mvindex(field,0) on each side via an unanchored mvfind() regex: a POSITIONAL bug (only the first scope tag on each side was ever considered -- fixtures V14-01/V14-02) compounded by a MATCHING bug (an unanchored regex let a short tag match as a SUBSTRING of a longer one, e.g. 'files:read' inside 'files:read_all' -- fixture V14-05). Classic SPL/SPL1 has no built-in set-intersection function over two multivalue fields (verified against the documented Multivalue eval functions reference for Splunk Enterprise 9.x/Splunk Cloud -- mvfind()'s second argument is always a regex, and there is no exact non-regex multivalue membership test). This computes the intersection via mvmap() iterating every value of removed_scope2 and testing EXACT membership in open_required_scope2 with an ANCHORED (\\A...\\z, not ^...$, so a trailing-newline edge case can't widen the match), LITERALLY-QUOTED (\\Q...\\E) mvfind() regex -- Splunk's regex engine is PCRE2 (confirmed in Splunk's own SPL-and-regular-expressions documentation), which supports \\Q...\\E literal quoting, so an arbitrary scope-tag string can never be misinterpreted as a regex metacharacter sequence. mvmap() evaluates entirely within the existing row via eval semantics; it never calls mvexpand and therefore cannot multiply rows or duplicate alerts, even when several tags overlap at once (fixture V14-08) or a side contains duplicate tags (fixture V14-03). CAVEAT (documented, not silently assumed): if a scope-tag value itself contained the literal three-character substring '\\E', \\Q...\\E quoting could be broken by PCRE2's own quoting rules; out of scope for this project's scope-tag vocabulary (telemetry/schema.md SS5) and not exercised by any fixture. NAMED, UNRESOLVED PLATFORM LIMITATION (fixture V14-07): classic Splunk field extraction (spath / INDEXED_EXTRACTIONS=json) has no representation for 'field present with an explicitly empty value list' distinct from 'field absent' -- unlike KQL's dynamic type, where isempty(dynamic([])) is documented to return false, distinct from isnull(). So on this platform, isnull(open_required_scope2)/isnull(removed_scope2) below cannot distinguish 'no scope evidence was ever recorded' from 'the scope list was explicitly recorded as empty' -- both collapse to the same missing_scope_evidence outcome here. This is a genuine, structural SPL/Splunk platform constraint, not an unfixed approximation in this query's own logic; the KQL model does not share it (see detections/kql/mcp_subscription_authorization_drift.kql and tests/validation/language_equivalence.test.js, which documents V14-07 as an intentional, named KQL/SPL divergence rather than claiming false equivalence).")`
+| eval removed_scope_matches=if(isnotnull(removed_scope2), mvmap(removed_scope2, if(mvfind(open_required_scope2, "\\A\\Q" . removed_scope2 . "\\E\\z")>=0, removed_scope2, null())), null())
+| eval scope_overlap_count=mvcount(removed_scope_matches)
 | eval rev_scope_ok=case(
     rev_applies!="yes", null(),
     change_type2!="scope_downgraded", "yes",
     isnull(open_required_scope2) OR isnull(removed_scope2), "missing",
-    mvfind(removed_scope2, mvindex(open_required_scope2,0))>=0 OR mvfind(open_required_scope2, mvindex(removed_scope2,0))>=0, "yes",
+    scope_overlap_count>0, "yes",
     1=1, "irrelevant")
 | eval rev_outcome=case(
     rev_applies=="not_yet", null(),

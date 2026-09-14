@@ -1,12 +1,13 @@
 # Block 6 — Validation / Stress-Test Corpus
 
-67 scenarios, 319 events. **Not mixed with Block 3 (normal) or Block 4 (attack/control) on
+75 scenarios, 351 events. **Not mixed with Block 3 (normal) or Block 4 (attack/control) on
 disk** — this corpus lives entirely under `data/validation/` and is loaded separately by
 `tests/detections/corpus.js`'s `loadValidationCorpus()`. Includes 11 Track 3 join-key/multi-
 boundary regression fixtures (V11-01..V11-11), 13 Track 3 scope-aware-correction regression
-fixtures (V12-01..V12-13), and 6 Track 3 example-driven regression fixtures (V13-01..V13-06)
-added across three later remediation passes — see "Track 3 remediation pass," "Track 3
-remediation pass, part 2," and "Track 3 remediation pass, part 3" below and
+fixtures (V12-01..V12-13), 6 Track 3 example-driven regression fixtures (V13-01..V13-06), and 8
+Track 3 exact-multivalue-scope-intersection fixtures (V14-01..V14-08) added across four later
+remediation passes — see "Track 3 remediation pass," "Track 3 remediation pass, part 2," "Track
+3 remediation pass, part 3," and "Track 3 remediation pass, part 4" below and
 `docs/validation-report.md`.
 
 **Purpose:** unlike Block 3 (demonstrate normal behavior) and Block 4 (demonstrate the three
@@ -14,7 +15,7 @@ attack classes), this corpus exists to **break the Block 5 detection rules** —
 benign traffic designed to produce false positives if the rules are weak, boundary conditions
 designed to expose off-by-one/timing bugs, and evasion-documentation fixtures that make blind
 spots concrete and testable rather than just asserted in prose. It found several real defects
-across four remediation rounds (see `docs/validation-report.md`) — that is the corpus doing its
+across five remediation rounds (see `docs/validation-report.md`) — that is the corpus doing its
 job, not a failure of the corpus.
 
 ## Regenerating
@@ -32,7 +33,7 @@ Deterministic (fixed clocks, fixed identifiers, same HMAC test key as Block 3/4)
 |---|---|---|
 | `track1/` | V1 (false positives), V2 (evasion illustration) | V1-01…V1-09, V2-01 |
 | `track2/` | V3 (false positives), V4 (evasion documentation) | V3-01…V3-07, V4-01, V4-02 |
-| `track3/` | V5 (false positives/boundary), V6 (evasion documentation), V11/V12/V13 (three remediation-pass regressions) | V5-01…V5-09, V6-01, V6-02, V11-01…V11-11, V12-01…V12-13, V13-01…V13-06 |
+| `track3/` | V5 (false positives/boundary), V6 (evasion documentation), V11/V12/V13/V14 (four remediation-pass regressions) | V5-01…V5-09, V6-01, V6-02, V11-01…V11-11, V12-01…V12-13, V13-01…V13-06, V14-01…V14-08 |
 | `enrichment/` | V8 (output/token/schema must never independently drive a verdict) | V8-01…V8-05 |
 | `hashing/` | V7 (HMAC key-epoch behavior) | V7-01…V7-03 |
 
@@ -197,6 +198,62 @@ suite would catch reintroduction of the removed inference.
 **V6-02 is retained, event content unmodified, and reclassified** from `confirmed_drift` to
 `insufficient_evidence` — not deleted, not silently excluded from any metrics or coverage count.
 See `docs/validation-report.md`, "Track 3 remediation pass, part 3."
+
+## Track 3 remediation pass, part 4 (V14-01..V14-08) — exact multivalue scope intersection
+
+A fourth follow-up review targeted the one remaining documented Track 3 approximation: the SPL
+scope-downgrade relevance check (`removed_scope` vs. `required_scope`) compared only the FIRST
+element of each multivalue field via an unanchored regex. Two compounding bugs, both in
+`detections/spl/mcp_subscription_authorization_drift.spl`:
+
+- **A positional bug**: a real overlap sitting anywhere but the first position on either side was
+  invisible to the check (fixture V14-01; V14-02 shows the identical overlap reordered to the
+  first position produces the correct result, proving the bug was purely about position).
+- **A matching bug, independent of the first**: `mvfind()`'s second argument is always a regex,
+  and the query passed a raw scope-tag string with no anchors — an unanchored regex matches as a
+  substring, so `"files:read"` could wrongly match inside `"files:read_all"` (fixture V14-05).
+
+**Checking whether the previous models hid this discrepancy — they did.** The independently-coded
+SPL model in `tests/validation/language_equivalence.test.js` already computed a full, exact,
+order-independent intersection — it never reproduced the real query's first-tag/substring bugs.
+The model was accidentally MORE correct than the query it claimed to represent, so every prior
+"KQL and SPL agree" claim never actually exercised this bug, because no multi-tag fixture existed
+to force the model and the query apart.
+
+**Fixed** with an exact, order-independent, anchored (`\A...\z`), literally-quoted (`\Q...\E`)
+multivalue intersection via `mvmap()`/`mvfind()` (Splunk's regex engine is confirmed PCRE2, which
+supports `\Q...\E` literal quoting; syntax verified against Splunk's documented Multivalue eval
+functions reference). `mvmap()` evaluates entirely within the existing row and never calls
+`mvexpand`, so it cannot multiply rows even when several tags overlap at once (V14-08) or a side
+has a duplicate tag (V14-03).
+
+**One genuine, unresolved SPL/Splunk platform limitation was found and is named, not
+approximated past** (fixture V14-07): classic Splunk field extraction cannot represent a field
+present with an explicitly empty value list as distinct from an absent field, unlike KQL's
+`dynamic` type (`isempty(dynamic([]))` is documented `false`). So an explicitly-empty
+`required_scope`/`removed_scope` reports `insufficient_evidence` in the real SPL query, where the
+JS oracle and KQL correctly report `evaluated_no_violation`. This one disagreement is asserted BY
+NAME in `tests/validation/language_equivalence.test.js`, not silently folded into a "fully
+equivalent" claim or silently excluded from the corpus.
+
+Eight new fixtures, covering the seven independently-specified tests this pass was built from
+(test 6 split into two fixtures — missing vs. explicitly-empty evidence are two distinct,
+independently meaningful evidentiary states):
+
+- **V14-01 / V14-02**: overlap at a non-first position, and the same overlap reordered to the
+  first position — proves the fix is genuinely order-independent, not accidentally correct.
+- **V14-03**: a duplicate tag confirms exactly once, not zero or twice.
+- **V14-04**: genuinely disjoint scope lists produce `evaluated_no_violation`.
+- **V14-05**: `"files:read"` vs. `"files:read_all"` — exact strings, never a substring match.
+- **V14-06**: `required_scope` entirely absent — `insufficient_evidence` (`missing_scope_evidence`).
+- **V14-07**: `required_scope` explicitly empty (`[]`) — `evaluated_no_violation` in the oracle
+  and KQL; the named SPL divergence described above.
+- **V14-08**: two independently-overlapping tags still produce exactly one alert row.
+
+Row-level assertions for all eight are in `tests/validation/track3_row_regression.test.js`,
+including two "RESTORED-BUG PROOF" tests that independently re-derive the old first-tag/
+unanchored-match behavior and show it disagrees with the fixed oracle on V14-01 (misses the real
+overlap) and V14-05 (wrongly matches the substring).
 
 ## Safety
 

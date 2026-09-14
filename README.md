@@ -51,9 +51,14 @@ before deploying anything here.
   to a confirmed finding. A follow-up example-driven pass then removed a subtler unsound
   shortcut (a "sole-candidate fallback" that resolved unknown-scope changes via candidate count)
   and replaced an "ever observed" approximation with a precise effective-time interval check for
-  account-wide revocations. See "Operational limitations", `docs/validation-report.md` "Track 3
-  remediation pass, part 2" and "part 3", and fixture V11-11 (retained, unmodified, as a worked
-  example of legacy telemetry that still cannot be resolved without the new fields).
+  account-wide revocations. A fourth pass then replaced the SPL scope-downgrade check's
+  first-scope-tag-only comparison with an exact, order-independent multivalue intersection,
+  surfacing one genuine, unfixable SPL/Splunk platform limitation (an explicitly-empty scope list
+  cannot be distinguished from an absent one in classic Splunk field extraction) that is named
+  and tested for, not silently approximated away. See "Operational limitations",
+  `docs/validation-report.md` "Track 3 remediation pass, part 2", "part 3", and "part 4", and
+  fixture V11-11 (retained, unmodified, as a worked example of legacy telemetry that still cannot
+  be resolved without the new fields).
 - **No claim of proven novelty, and no claim of detections.ai acceptance, is made anywhere in
   this project.** `publication/novelty-check.md` documents a specific research pass, not a
   guarantee that no prior art exists; this project has not been submitted to or accepted by
@@ -128,7 +133,7 @@ result never does.
 3. **Normal corpus** — `data/normal/` (13 scenarios / 106 events)
 4. **Controlled attacks** — `data/attack/` (18 scenarios / 94 events)
 5. **Detection rules** — `detections/` (Sigma, KQL, SPL)
-6. **Validation** — `data/validation/` (67 scenarios / 319 events) + `docs/validation-report.md`
+6. **Validation** — `data/validation/` (75 scenarios / 351 events) + `docs/validation-report.md`
 7. **Publication** — `publication/` (this block)
 
 ## Results
@@ -137,12 +142,12 @@ result never does.
 |---|---|---|
 | Normal (Block 3) | 13 | 106 |
 | Attack/control (Block 4) | 18 | 94 |
-| Validation/stress (Block 6) | 67 | 319 |
-| **Total** | **98** | **519** |
+| Validation/stress (Block 6) | 75 | 351 |
+| **Total** | **106** | **551** |
 
-**129/129 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
+**139/139 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
 tests/detections/*.test.js tests/validation/*.test.js`), fully deterministic on regeneration.
-This count reflects three Track 3 remediation passes: (1) SPL join-key/max=0 fixes, oracle
+This count reflects four Track 3 remediation passes: (1) SPL join-key/max=0 fixes, oracle
 multi-boundary/independent-leg fixes, a genuine two-model language-equivalence replacement, and
 11 regression fixtures (V11-01..V11-11); (2) a scope-aware correction resolving revocation
 scope to a specific authorization binding rather than a principal, adding six new project-defined
@@ -151,9 +156,12 @@ telemetry fields, a three-outcome (`confirmed_drift`/`evaluated_no_violation`/
 (3) an example-driven regression pass built from ten independently-specified examples, which
 removed a subtler unsound "sole-candidate" scope inference part 2 still carried, replaced an
 "ever observed" approximation with a precise effective-time interval check, and added 6 further
-fixtures (V13-01..V13-06) — see `docs/validation-report.md` for the full before/after account.
-Re-run the suite yourself rather than assuming any specific number stays fixed across future
-changes.
+fixtures (V13-01..V13-06); (4) a pass fixing the SPL scope-downgrade relevance check's
+first-scope-tag-only approximation with an exact multivalue intersection, adding 8 further
+fixtures (V14-01..V14-08) and naming one genuine, unresolved SPL/Splunk platform limitation
+(V14-07) rather than approximating past it — see `docs/validation-report.md` for the full
+before/after account. Re-run the suite yourself rather than assuming any specific number stays
+fixed across future changes.
 
 Controlled-corpus precision/recall is 1.000/1.000 for all three tracks under their declared
 prerequisites (see `docs/validation-report.md`, "View 1"). **This is not, and must not be read
@@ -227,6 +235,25 @@ contract, not something a code change here can close).
   comparison. A real instance of this exact gap was found and fixed in the KQL query itself
   during this pass, not merely documented — see `docs/validation-report.md`, "Track 3
   remediation pass, part 3," "One exact unresolved case identified, not approximated."
+- **[Code defect, FIXED in a fourth remediation pass] The SPL scope-downgrade relevance check
+  compared only the first tag of each scope list, via an unanchored regex.** This was two
+  compounding bugs: a positional one (a real overlap anywhere but the first position was
+  invisible — fixture V14-01) and a substring-matching one (an unanchored regex let
+  `"files:read"` wrongly match inside `"files:read_all"` — fixture V14-05). Fixed with an exact,
+  order-independent, anchored-literal-quoted multivalue intersection (`mvmap()`/`mvfind()`,
+  syntax verified against Splunk's documented Multivalue eval functions reference). Checking this
+  also found that the independently-coded SPL model in
+  `tests/validation/language_equivalence.test.js` had silently been implementing the CORRECT
+  intersection all along — the model was accidentally more correct than the query it claimed to
+  represent, so every prior "KQL and SPL agree" claim never actually exercised this bug. See
+  `docs/validation-report.md`, "Track 3 remediation pass, part 4."
+- **[Named, unresolved SPL/Splunk platform limitation, NOT approximated] An explicitly-empty
+  scope list cannot be distinguished from an absent one in classic Splunk field extraction**
+  (unlike KQL's `dynamic` type, where `isempty(dynamic([]))` is documented `false`, distinct from
+  absent). Fixture V14-07 names this exactly: the JS oracle and KQL correctly report
+  `evaluated_no_violation`; the real SPL query reports `insufficient_evidence` instead, and this
+  one disagreement is asserted BY NAME in `tests/validation/language_equivalence.test.js` rather
+  than silently folded into a "fully equivalent" claim or silently excluded from the corpus.
 - **[Deployment prerequisite] Collector canonicalization can create Track 1 artifacts.** A
   collector that hashes a Base64-sentinel-encoded routing header without decoding it first will
   manufacture a false conflict for an identical underlying value. Treat
@@ -290,7 +317,7 @@ docs/            threat model, invariants, false-positive analysis, evasion limi
 telemetry/       the locked audit telemetry contract (schema, field mapping, correlation logic)
 data/            normal / attack / validation corpora (JSONL) + manifests + per-corpus READMEs
 tools/harness/   deterministic corpus generators + shared hashing/protocol-validation helpers
-tests/           Node test suites (normal, attack, detections, validation) — 129 tests
+tests/           Node test suites (normal, attack, detections, validation) — 139 tests
 detections/      Sigma / KQL / SPL rules + field-mapping + detection documentation
 publication/     detections.ai / GitHub Sync / Intel Exchange / novelty-check materials (this block)
 ```

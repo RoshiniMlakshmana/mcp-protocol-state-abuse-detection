@@ -2,7 +2,7 @@
 
 Block 6 deliverable. Compiles known benign causes, environmental dependencies, and tuning
 guidance for all three detection tracks, informed by the Block 6 stress-test corpus
-(`data/validation/`, 67 scenarios) and its findings (`docs/validation-report.md`).
+(`data/validation/`, 75 scenarios) and its findings (`docs/validation-report.md`).
 
 This document distinguishes three different things that are easy to conflate:
 - A **rule defect** — the logic itself is wrong given correct inputs. Found once in Block 6

@@ -351,11 +351,14 @@ index=mcp_security_audit sourcetype=mcp:audit:json
     affected_scope2=="all_principal_bindings", if(binding_existed_at_effective_at=1 AND binding_already_closed_by_effective_at=0, "yes", "no"),
     affected_scope2=="binding", if(isnull(effective_binding_id), "ambiguous", if(mvfind(affected_binding_ids2, effective_binding_id)>=0, "yes", "no")),
     1=1, "ambiguous")
+`comment("EXACT, order-independent multivalue scope intersection (Track 3 remediation pass, part 4). A prior revision compared only mvindex(field,0) on each side via an unanchored mvfind() regex -- both a positional bug and a substring-match bug. Fixed via mvmap()/mvfind() with an anchored (\\A...\\z), literally-quoted (\\Q...\\E) pattern -- Splunk's regex engine is PCRE2, which supports \\Q...\\E literal quoting")`
+| eval removed_scope_matches=if(isnotnull(removed_scope2), mvmap(removed_scope2, if(mvfind(open_required_scope2, "\\A\\Q" . removed_scope2 . "\\E\\z")>=0, removed_scope2, null())), null())
+| eval scope_overlap_count=mvcount(removed_scope_matches)
 | eval rev_scope_ok=case(
     rev_applies!="yes", null(),
     change_type2!="scope_downgraded", "yes",
     isnull(open_required_scope2) OR isnull(removed_scope2), "missing",
-    mvfind(removed_scope2, mvindex(open_required_scope2,0))>=0 OR mvfind(open_required_scope2, mvindex(removed_scope2,0))>=0, "yes",
+    scope_overlap_count>0, "yes",
     1=1, "irrelevant")
 | eval rev_outcome=case(
     rev_applies=="not_yet", null(),
@@ -399,11 +402,28 @@ index=mcp_security_audit sourcetype=mcp:audit:json
 | sort 0 notif_time
 ```
 
-**SPL-specific approximation, honestly flagged**: SPL has no built-in set-intersection over two
-multivalue fields, so the scope-downgrade relevance check above compares each side's first scope
-tag — correct for this project's single-tag fixtures, an approximation for genuinely multi-tag
-scopes. The JS oracle (`tests/attack/track3util.js`) implements the precise any-element
-intersection and remains the authority for that case.
+**Fixed in a fourth remediation pass (previously an approximation here — see
+`docs/validation-report.md`, "Track 3 remediation pass, part 4")**: SPL has no built-in
+set-intersection function over two multivalue fields (verified against Splunk's documented
+Multivalue eval functions reference; `mvfind()`'s second argument is always a regex, and there
+is no exact non-regex membership test). A prior revision of this query compared only each side's
+FIRST scope tag via an unanchored regex — both a positional bug (a real overlap anywhere else
+went undetected) and a substring-matching bug (an unanchored regex let a short tag wrongly match
+inside an unrelated longer one, e.g. `"files:read"` inside `"files:read_all"`). The query above
+now computes an exact, order-independent intersection via `mvmap()`/`mvfind()` with an anchored,
+literally-quoted (`\Q...\E`) pattern, which cannot multiply rows even when several tags overlap
+at once (it never calls `mvexpand`).
+
+**One genuine, unresolved SPL/Splunk platform limitation remains, named rather than
+approximated**: classic Splunk field extraction cannot represent a field that is present with an
+explicitly empty value list as distinct from an absent field (unlike KQL's `dynamic` type, where
+`isempty(dynamic([]))` is documented `false`). So `isnull(open_required_scope2)`/
+`isnull(removed_scope2)` above cannot distinguish "no scope evidence was ever recorded" from "the
+scope list was explicitly recorded as empty" — both report `insufficient_evidence`
+(`missing_scope_evidence`) on this platform, where the JS oracle and KQL correctly report
+`evaluated_no_violation` for the explicitly-empty case. This is asserted as one intentional,
+named KQL/SPL disagreement in `tests/validation/language_equivalence.test.js` (fixture V14-07),
+not silently folded into a "fully equivalent" claim.
 
 **Note on the ASCII-quote `strptime()` format string above:** it assumes ISO-8601 with
 millisecond precision (`2026-09-05T10:10:00.000Z`). This has not been executed against a live
@@ -503,11 +523,21 @@ and `detections/README.md`, "Sigma limitations for Track 3," for the complete an
 - **[Scope boundary, partial] A `scope_downgraded` change's relevance to a given subscription
   requires BOTH `mcp.subscription.required_scope` and `mcp.authz.change.removed_scope`.** Either
   missing reports `InsufficientEvidence` (fixtures V5-02, V12-09), never a guessed default.
-- **[Validation gap, SPL-only] The SPL scope-downgrade relevance check compares each side's
-  first scope tag**, not a full set intersection (SPL has no built-in set-intersection over two
-  multivalue fields) — correct for this project's single-tag fixtures, an approximation for
-  genuinely multi-tag scopes. The JS oracle and KQL (via `set_intersect`) both implement the
-  precise any-element intersection.
+- **[Code defect, FIXED — fourth remediation pass] The SPL scope-downgrade relevance check
+  previously compared only each side's first scope tag via an unanchored regex** — a positional
+  bug (a real overlap anywhere else went undetected, fixture V14-01) compounded by a
+  substring-matching bug (an unanchored regex let `"files:read"` wrongly match inside
+  `"files:read_all"`, fixture V14-05). Fixed with an exact, order-independent,
+  anchored-literal-quoted multivalue intersection (`mvmap()`/`mvfind()`, syntax verified against
+  Splunk's documented Multivalue eval functions reference), matching the JS oracle and KQL's
+  (`set_intersect`) precise any-element intersection. Checking this also found the
+  independently-coded SPL model in `tests/validation/language_equivalence.test.js` had silently
+  been implementing the correct intersection all along, hiding the real query's bug from every
+  prior "KQL/SPL agree" claim — corrected on both sides. **[Named, unresolved SPL/Splunk platform
+  limitation]** classic Splunk field extraction cannot represent an explicitly-empty scope list
+  as distinct from an absent one (unlike KQL's `dynamic` type) — fixture V14-07 is asserted as
+  one intentional, named KQL/SPL disagreement, not folded into a "fully equivalent" claim. See
+  `docs/validation-report.md`, "Track 3 remediation pass, part 4."
 - **[Code defects, FIXED — first remediation pass]** The close-suppression join and the SPL
   expiry-leg join previously keyed on `subscription_id` alone in one or both languages; SPL's
   `join type=inner` subsearches previously relied on Splunk's `max=1` default. Both fixed; see

@@ -1690,6 +1690,189 @@ function t3_v13_allPrincipalBindingsPreciseInterval() {
 }
 
 // ===========================================================================
+// TRACK 3 REMEDIATION PASS, PART 4 (V14-01..V14-08) -- exact multivalue scope
+// intersection. Fixes a "first scope tag only" approximation in the SPL query
+// (detections/spl/mcp_subscription_authorization_drift.spl) for
+// scope_downgraded relevance (removed_scope vs required_scope): a prior
+// revision compared only mvindex(field,0) on each side via an unanchored
+// mvfind() regex -- both a POSITIONAL bug (only the first tag on each side was
+// ever considered) and a MATCHING bug (unanchored regex meant "files:read"
+// could match inside "files:read_all" as a substring). Both are fixed with an
+// exact, order-independent, anchored-literal multivalue intersection. See
+// docs/validation-report.md "Track 3 remediation pass, part 4".
+// ===========================================================================
+
+function t3_v14_matchAtNonFirstPosition() {
+  const file = 'track3/v14_scope_match_non_first_position.jsonl';
+  const clock = new Clock('2026-10-04T09:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v14-01');
+  const binding = 'binding:v14-01';
+  sub(evts, clock, ctx, { subId: '20101', principalHash: p, bindingId: binding, requiredScope: ['storage:read', 'network:access', 'files:read'], validUntil: '2026-10-04T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-04T09:05:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['tasks:cancel', 'files:read'] });
+  clock.t = Date.parse('2026-10-04T09:10:00.000Z');
+  notify(evts, clock, ctx, { subId: '20101', principalHash: p, uriHash: hmacHash('resource:v14-01') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V14-01', file,
+    purpose: 'EXACT-INTERSECTION EXAMPLE #1: the overlapping tag ("files:read") is the LAST element of required_scope and the LAST element of removed_scope, not the first. A first-tag-only comparison (mvindex(field,0) on each side) would compare "storage:read" against "tasks:cancel", find no match, and wrongly report no violation. Must fire -- the overlap exists regardless of position.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v14_reorderedListsSameResult() {
+  const file = 'track3/v14_scope_reordered_same_result.jsonl';
+  const clock = new Clock('2026-10-04T09:20:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v14-02');
+  const binding = 'binding:v14-02';
+  sub(evts, clock, ctx, { subId: '20102', principalHash: p, bindingId: binding, requiredScope: ['files:read', 'network:access', 'storage:read'], validUntil: '2026-10-04T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-04T09:25:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['files:read', 'tasks:cancel'] });
+  clock.t = Date.parse('2026-10-04T09:30:00.000Z');
+  notify(evts, clock, ctx, { subId: '20102', principalHash: p, uriHash: hmacHash('resource:v14-02') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V14-02', file,
+    purpose: 'EXACT-INTERSECTION EXAMPLE #2, order-independence counterpart to V14-01: the SAME underlying overlap ("files:read") reappears with the matching tag reordered to the FIRST element on both sides instead of the last. Must produce the identical ConfirmedDrift outcome as V14-01 -- proves the intersection is order-independent, not accidentally correct only when the match happens to land first or last.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v14_duplicateTags() {
+  const file = 'track3/v14_scope_duplicate_tags.jsonl';
+  const clock = new Clock('2026-10-04T09:40:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v14-03');
+  const binding = 'binding:v14-03';
+  sub(evts, clock, ctx, { subId: '20103', principalHash: p, bindingId: binding, requiredScope: ['files:read', 'files:read'], validUntil: '2026-10-04T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-04T09:45:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['files:read'] });
+  clock.t = Date.parse('2026-10-04T09:50:00.000Z');
+  notify(evts, clock, ctx, { subId: '20103', principalHash: p, uriHash: hmacHash('resource:v14-03') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V14-03', file,
+    purpose: 'EXACT-INTERSECTION EXAMPLE #3: required_scope carries a duplicate tag ("files:read" twice). Must still confirm exactly ONCE (one alert row), not zero times (duplicates breaking a naive equality check) and not twice (duplicates producing one row per repeated element) -- see tests/validation/track3_row_regression.test.js for the explicit single-row assertion.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v14_noOverlap() {
+  const file = 'track3/v14_scope_no_overlap.jsonl';
+  const clock = new Clock('2026-10-04T10:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v14-04');
+  const binding = 'binding:v14-04';
+  sub(evts, clock, ctx, { subId: '20104', principalHash: p, bindingId: binding, requiredScope: ['files:read'], validUntil: '2026-10-04T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-04T10:05:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['files:write'] });
+  clock.t = Date.parse('2026-10-04T10:10:00.000Z');
+  notify(evts, clock, ctx, { subId: '20104', principalHash: p, uriHash: hmacHash('resource:v14-04') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V14-04', file,
+    purpose: 'EXACT-INTERSECTION EXAMPLE #4: required_scope=["files:read"], removed_scope=["files:write"] -- genuinely no overlap. Must NOT fire (evaluated_no_violation) -- the downgrade correctly targets this instance\'s own binding but removes a permission it never depended on.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: true, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v14_exactStringNotSubstring() {
+  const file = 'track3/v14_scope_exact_string_not_substring.jsonl';
+  const clock = new Clock('2026-10-04T10:20:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v14-05');
+  const binding = 'binding:v14-05';
+  sub(evts, clock, ctx, { subId: '20105', principalHash: p, bindingId: binding, requiredScope: ['files:read_all'], validUntil: '2026-10-04T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-04T10:25:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['files:read'] });
+  clock.t = Date.parse('2026-10-04T10:30:00.000Z');
+  notify(evts, clock, ctx, { subId: '20105', principalHash: p, uriHash: hmacHash('resource:v14-05') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V14-05', file,
+    purpose: 'EXACT-INTERSECTION EXAMPLE #5: required_scope=["files:read_all"], removed_scope=["files:read"] -- these are two DIFFERENT, complete scope strings that happen to share a prefix. Must NOT fire. An unanchored substring/regex match (the prior SPL bug\'s second failure mode, independent of the first-tag positional bug) would wrongly treat "files:read" as matching inside "files:read_all".',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: true, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v14_missingScopeEvidenceEntirely() {
+  const file = 'track3/v14_scope_missing_entirely.jsonl';
+  const clock = new Clock('2026-10-04T10:40:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v14-06');
+  const binding = 'binding:v14-06';
+  sub(evts, clock, ctx, { subId: '20106', principalHash: p, bindingId: binding, validUntil: '2026-10-04T12:00:00.000Z' }); // no requiredScope at all
+  clock.t = Date.parse('2026-10-04T10:45:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['files:read'] });
+  clock.t = Date.parse('2026-10-04T10:50:00.000Z');
+  notify(evts, clock, ctx, { subId: '20106', principalHash: p, uriHash: hmacHash('resource:v14-06') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V14-06', file,
+    purpose: 'EXACT-INTERSECTION EXAMPLE #6a (missing, contrast with V14-07 explicitly-empty): this instance\'s mcp.subscription.required_scope field is entirely ABSENT -- relevance genuinely cannot be evaluated. Must report insufficient_evidence (missing_scope_evidence), never a guessed default in either direction.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: false, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v14_explicitlyEmptyScopeEvidence() {
+  const file = 'track3/v14_scope_explicitly_empty.jsonl';
+  const clock = new Clock('2026-10-04T11:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v14-07');
+  const binding = 'binding:v14-07';
+  sub(evts, clock, ctx, { subId: '20107', principalHash: p, bindingId: binding, requiredScope: [], validUntil: '2026-10-04T12:00:00.000Z' }); // EXPLICITLY empty, not absent
+  clock.t = Date.parse('2026-10-04T11:05:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['files:read'] });
+  clock.t = Date.parse('2026-10-04T11:10:00.000Z');
+  notify(evts, clock, ctx, { subId: '20107', principalHash: p, uriHash: hmacHash('resource:v14-07') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V14-07', file,
+    purpose: 'EXACT-INTERSECTION EXAMPLE #6b (explicitly empty, contrast with V14-06 missing): required_scope is EXPLICITLY recorded as an empty list -- known evidence that this instance depends on no scoped permission at all, distinct from "unknown." Authoritative-oracle/KQL result: evaluated_no_violation (an explicit empty set has zero intersection with anything, computed, not assumed). KNOWN, DOCUMENTED SPL-ONLY DIVERGENCE: classic Splunk field extraction cannot represent "field present with zero values" distinctly from "field absent" (unlike KQL\'s dynamic([]), which isempty() correctly reports as NOT empty) -- so a real SPL deployment reports insufficient_evidence (missing_scope_evidence) here instead. See tests/validation/language_equivalence.test.js and docs/validation-report.md "Track 3 remediation pass, part 4" for why this one scenario is an intentional, named exception to the KQL/SPL zero-disagreements invariant, not a defect.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: false, evasion_test: false,
+    telemetry_limitation: 'Splunk classic field extraction (spath / INDEXED_EXTRACTIONS=json) cannot distinguish an explicitly-empty JSON array from an absent field; KQL\'s dynamic type can. This is a genuine SPL/Splunk platform limitation, not an unfixed query approximation.',
+    notes: null
+  });
+}
+
+function t3_v14_multipleMatchingTagsSingleAlert() {
+  const file = 'track3/v14_scope_multiple_matches_single_alert.jsonl';
+  const clock = new Clock('2026-10-04T11:20:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v14-08');
+  const binding = 'binding:v14-08';
+  sub(evts, clock, ctx, { subId: '20108', principalHash: p, bindingId: binding, requiredScope: ['files:read', 'files:write'], validUntil: '2026-10-04T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-04T11:25:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['files:read', 'files:write', 'network:access'] });
+  clock.t = Date.parse('2026-10-04T11:30:00.000Z');
+  notify(evts, clock, ctx, { subId: '20108', principalHash: p, uriHash: hmacHash('resource:v14-08') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V14-08', file,
+    purpose: 'EXACT-INTERSECTION EXAMPLE #7: TWO tags overlap ("files:read" AND "files:write"), not just one. Must still produce exactly ONE alert row for this one notification -- the intersection is used as a boolean relevance gate (overlap exists or not), never as a per-matching-tag row multiplier. See tests/validation/track3_row_regression.test.js for the explicit single-row assertion.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+// ===========================================================================
 // ENRICHMENT -- V8
 // ===========================================================================
 
@@ -1959,6 +2142,15 @@ t3_v13_unknownScopeSingleCandidate();
 t3_v13_requestIdReusedAfterReopen();
 t3_v13_incompleteTimingEvidence();
 t3_v13_allPrincipalBindingsPreciseInterval();
+
+t3_v14_matchAtNonFirstPosition();
+t3_v14_reorderedListsSameResult();
+t3_v14_duplicateTags();
+t3_v14_noOverlap();
+t3_v14_exactStringNotSubstring();
+t3_v14_missingScopeEvidenceEntirely();
+t3_v14_explicitlyEmptyScopeEvidence();
+t3_v14_multipleMatchingTagsSingleAlert();
 
 e_tinyMaliciousMismatch();
 e_hugeLegitimateResult();

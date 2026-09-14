@@ -304,10 +304,25 @@ explicitly low-confidence/informational query, never merged into the primary res
   `docs/validation-report.md`, "Track 3 remediation pass, part 3."
 - **[Scope boundary, still not fully closed] A scope downgrade's relevance to a given
   subscription cannot be determined without both `mcp.subscription.required_scope` and
-  `mcp.authz.change.removed_scope`.** Either missing reports `insufficient_evidence`
-  (fixtures V5-02, V12-09) rather than guessing "irrelevant" or "invalidating." Deployments that
-  never emit these two fields cannot get a resolved answer for downgrades specifically, even
+  `mcp.authz.change.removed_scope`.** Either genuinely absent reports `insufficient_evidence`
+  (fixtures V5-02, V12-09, V14-06) rather than guessing "irrelevant" or "invalidating." Deployments
+  that never emit these two fields cannot get a resolved answer for downgrades specifically, even
   though revocation/expiry resolution works from the other new fields alone.
+- **[Code defect, FIXED in a fourth remediation pass] The SPL scope-downgrade relevance check
+  compared only the first tag of `required_scope`/`removed_scope`, via an unanchored regex.**
+  Two compounding bugs: a positional one (a real overlap anywhere but position zero was invisible
+  — fixture V14-01) and a substring-matching one (an unanchored regex let `"files:read"` wrongly
+  match inside `"files:read_all"` — fixture V14-05). Fixed with an exact, order-independent,
+  anchored-literal-quoted multivalue intersection (`mvmap()`/`mvfind()`, verified against
+  Splunk's documented Multivalue eval functions reference). Checking this also found that the
+  independently-coded SPL model in `tests/validation/language_equivalence.test.js` had silently
+  been implementing the correct intersection all along, hiding the real query's bug from every
+  prior "KQL/SPL agree" claim — corrected on both sides. **One genuine, unfixable SPL/Splunk
+  platform limitation surfaced and is named, not approximated past**: classic Splunk field
+  extraction cannot represent an explicitly-empty scope list as distinct from an absent one
+  (unlike KQL's `dynamic` type), so fixture V14-07 is asserted as one intentional, named
+  KQL/SPL disagreement rather than folded into a "fully equivalent" claim. See
+  `docs/validation-report.md`, "Track 3 remediation pass, part 4."
 - **[Code defects, FIXED]** A Track 3 remediation pass found and fixed: (a) SPL's expiry-leg and
   close-suppression joins previously keyed on `subscription_id` alone, inconsistent with KQL,
   which could let one principal's close/expiry data affect a different principal's notification

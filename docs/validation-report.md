@@ -50,6 +50,23 @@ model (A12, A14, A-EXP1, V5-07, V5-09, V11-01 through V11-04 and V11-10); one fi
 reclassified from a claimed "partially detectable" finding to `insufficient_evidence`, matching
 example #6 exactly.
 
+**Track 3 remediation pass, part 4 — exact multivalue scope intersection (this document's fifth
+revision):** while checking the ONE remaining documented SPL-only approximation named in part
+3's "remaining risks" item 5, a fourth follow-up review found that the language-equivalence
+JS model claiming to represent the real SPL query had silently been implementing the CORRECT,
+exact intersection all along — meaning the "SPL is fully equivalent to KQL" claims in this
+document and in `tests/validation/language_equivalence.test.js` never actually exercised the
+real query's first-scope-tag-only approximation, because no multi-tag fixture existed to expose
+the gap and the model itself did not reproduce the bug it was supposed to mirror. The real SPL
+query (`detections/spl/mcp_subscription_authorization_drift.spl`) is now fixed to compute an
+exact, order-independent, anchored-literal-quoted multivalue intersection via `mvmap()`/
+`mvfind()` (syntax verified against Splunk's documented Multivalue eval functions reference for
+Splunk Enterprise 9.x/Splunk Cloud), and the JS model's missing-vs-empty-evidence check was
+corrected to honestly reflect a genuine SPL/Splunk platform constraint the fix could not remove
+(fixture V14-07 — see "Track 3 remediation pass, part 4" below for the full account, including
+the one exact unresolved case this pass could not fix in SPL, named rather than approximated
+away).
+
 **Post-hoc audit correction (applied to this document):** an earlier version of this report
 presented a single "full stress-test corpus" precision/recall table showing FP=0 across the
 board, while separately describing V1-08, V5-02, and V5-09 in prose as benign-but-firing
@@ -76,8 +93,8 @@ version fixes that.
 | Block 3 (normal) | 13 | 106 | Negative-test baseline |
 | Block 4 (attack/control) | 18 | 94 | Positive/negative attack-class proof |
 | **Curated core (3+4)** | **31** | **200** | The metrics reported at the end of Block 5 |
-| Block 6 (validation/stress) | 67 | 319 | Adversarial-but-benign + boundary + evasion fixtures, incl. 11 join-key/multi-boundary fixtures (V11-01..V11-11), 13 scope-aware-correction fixtures (V12-01..V12-13), and 6 example-driven regression fixtures (V13-01..V13-06) |
-| **Full stress-test corpus (3+4+6)** | **98** | **519** | This block's metrics |
+| Block 6 (validation/stress) | 75 | 351 | Adversarial-but-benign + boundary + evasion fixtures, incl. 11 join-key/multi-boundary fixtures (V11-01..V11-11), 13 scope-aware-correction fixtures (V12-01..V12-13), 6 example-driven regression fixtures (V13-01..V13-06), and 8 exact-multivalue-scope-intersection fixtures (V14-01..V14-08) |
+| **Full stress-test corpus (3+4+6)** | **106** | **551** | This block's metrics |
 
 All four corpora are deterministic (fixed logical clocks, fixed identifiers, fixed HMAC test
 key) and regenerate byte-for-byte identically. Block 6's corpus lives under `data/validation/`
@@ -137,13 +154,13 @@ alert?"** — that second question is View 2, below.
 | 2 | 5 | 0 | 26 | 0 | 31 | 1.000 | 1.000 |
 | 3 (excl. experimental A-EXP1) | 3 | 0 | 27 | 0 | 30 | 1.000 | 1.000 |
 
-### Full stress-test corpus (98 scenarios) — after all three Track 3 remediation passes
+### Full stress-test corpus (106 scenarios) — after all four Track 3 remediation passes
 
 | Track | TP | FP | TN | FN | n | Precision | Recall |
 |---|---|---|---|---|---|---|---|
-| 1 | 8 | 0 | 90 | 0 | 98 | 1.000 | 1.000 |
-| 2 | 9 | 0 | 89 | 0 | 98 | 1.000 | 1.000 |
-| 3 (excl. experimental A-EXP1) | 21 | 0 | 76 | 0 | 97 | 1.000 | 1.000 |
+| 1 | 8 | 0 | 98 | 0 | 106 | 1.000 | 1.000 |
+| 2 | 9 | 0 | 97 | 0 | 106 | 1.000 | 1.000 |
+| 3 (excl. experimental A-EXP1) | 25 | 0 | 80 | 0 | 105 | 1.000 | 1.000 |
 
 **These per-scenario TP/FP/TN/FN numbers collapse `track3PrimaryFires` to a boolean (fired iff
 at least one `confirmed_drift` row exists) — they do NOT show how many notifications were
@@ -152,28 +169,28 @@ indistinguishable in this table from one where every notification came back
 `insufficient_evidence` rather than a positively-confirmed clean result. See "Track 3 coverage
 report" below for that breakdown, computed separately for exactly this reason.
 
-### Track 3 coverage report (part 3 revision) — confirmed / clean / insufficient, reported separately
+### Track 3 coverage report (part 4 revision) — confirmed / clean / insufficient, reported separately
 
 Computed mechanically by `tests/validation/metrics.test.js`'s coverage test, over every
 notification in the full stress corpus (excluding the experimental A-EXP1 scenario):
 
 | Outcome | Count | Share |
 |---|---|---|
-| `confirmed_drift` | 27 | 44.3% |
-| `evaluated_no_violation` | 24 | 39.3% |
-| `insufficient_evidence` | 10 | 16.4% |
-| **Total evaluated notifications** | **61** | 100% |
+| `confirmed_drift` | 31 | 44.9% |
+| `evaluated_no_violation` | 27 | 39.1% |
+| `insufficient_evidence` | 11 | 15.9% |
+| **Total evaluated notifications** | **69** | 100% |
 
 `insufficient_evidence` breakdown by reason: `ambiguous_scope` (5), `no_invalidity_evidence` (1),
-`missing_scope_evidence` (1), `conflicting_evidence` (1), `incompatible_hash_epoch` (1),
-`incomplete_timing_evidence` (1). **This 16.4% is not a defect to be minimized to zero** — it is
-the correction working as intended: every one of these ten notifications would previously have
+`missing_scope_evidence` (2), `conflicting_evidence` (1), `incompatible_hash_epoch` (1),
+`incomplete_timing_evidence` (1). **This ~16% is not a defect to be minimized to zero** — it is
+the correction working as intended: every one of these eleven notifications would previously have
 either mechanically fired (a false-positive risk, e.g. via the now-removed sole-candidate
 inference) or mechanically cleared (a false-negative risk) under principal-only, scope-blind, or
 candidate-count logic, and now honestly reports that the telemetry available does not support a
-confident answer either way. `ambiguous_scope` grew from 4 to 5 in this revision specifically
-because the sole-candidate fallback (part 2's own unsound shortcut) was removed — see "Track 3
-remediation pass, part 3" below.
+confident answer either way. `missing_scope_evidence` grew from 1 to 2 in this revision because
+fixture V14-06 (entirely absent `required_scope`) adds a second genuine instance of it — see
+"Track 3 remediation pass, part 4" below.
 
 **These numbers are controlled-corpus implementation-correctness metrics, evaluated under the
 declared prerequisites above. They are NOT real-world precision/recall and must never be cited
@@ -320,11 +337,11 @@ FP or FN relative to the correct implementation):
 | Track 2: any `deny` fires (drops reason check) | 0 / — | 3 / — | Yes |
 | Track 2: any `mcp.task.authorization` event fires (drops decision check) | 0 / — | 19 / — | Yes |
 | Track 3: `detected_at` used instead of `effective_at` | — / 0 | — / 5 | Yes |
-| Track 3: close-suppression check removed | 0 / — | 62 / — | Yes |
-| Track 3: `mcp.authz.change.type` filter removed (reintroduces V5-03) | 0 / — | 61 / — | Yes |
+| Track 3: close-suppression check removed | 0 / — | 66 / — | Yes |
+| Track 3: `mcp.authz.change.type` filter removed (reintroduces V5-03) | 0 / — | 65 / — | Yes |
 
-(Counts grew alongside the corpus after the three Track 3 remediation passes added
-11 + 13 + 7 regression fixtures; re-run `node --test tests/validation/mutation.test.js` rather than assuming these
+(Counts grew alongside the corpus after the four Track 3 remediation passes added
+11 + 13 + 6 + 8 regression fixtures; re-run `node --test tests/validation/mutation.test.js` rather than assuming these
 exact numbers stay fixed across future corpus changes.)
 
 The last row is a direct, mechanical demonstration that this validation suite would have caught
@@ -345,9 +362,16 @@ comment), compared by **outcome per notification** (`confirmed_drift`/`evaluated
 neither runs against a real Sentinel/Splunk backend — "equivalent" means "these two
 independently-authored models of each language's documented semantics agree," which is the
 strongest claim achievable without native execution (still pending; see README.md).** Both
-models share the same documented simplification as the real KQL/SPL queries: binding-candidate
-membership is approximated as "ever observed for this principal," not precisely
-interval-bounded — see the KQL file's header comment for the full rationale.
+models implement the precise, interval-bounded resolution algorithm the real KQL/SPL queries use
+(part 3's fix; the earlier "ever observed for this principal" approximation this paragraph used
+to describe here was corrected in that pass and this stale sentence was left unfixed until part
+4 — see the KQL file's header comment for the full rationale). **One named, intentional exception
+remains (part 4): fixture V14-07 (an explicitly-empty, not absent, `required_scope`) is where the
+two models are EXPECTED to disagree** — KQL's `dynamic` type can represent "present but empty"
+distinctly from "absent" (`isempty(dynamic([]))` is documented `false`); classic Splunk field
+extraction cannot. `tests/validation/language_equivalence.test.js`'s equivalence test asserts
+exactly this one disagreement by name, not zero, so this platform gap stays visible rather than
+silently passing or silently failing the suite.
 
 A third model, `preCorrectionModelResults`, reconstructs the **pre-scope-correction** behavior
 (principal-only join, no binding/scope awareness at all — this is part 1's corrected-but-still-
@@ -357,9 +381,9 @@ V12 fixtures designed to expose exactly this gap.
 
 | Track | Sigma vs. KQL vs. SPL | Verified how |
 |---|---|---|
-| 1 | Fully equivalent across all 98 stress-corpus scenarios | `tests/validation/language_equivalence.test.js` — three independently-written JS predicates mirroring each language's literal filter, zero disagreements |
-| 2 | Fully equivalent across all 98 stress-corpus scenarios | Same method, zero disagreements |
-| 3 | **The independently-coded KQL-model and SPL-model outcomes agree on every notification across all 98 stress-corpus scenarios. Sigma is NOT equivalent — retained only as a documented, deliberately incomplete correlation.** | Per-notification outcome comparison, not a boolean; see matrix below for the Sigma comparison |
+| 1 | Fully equivalent across all 106 stress-corpus scenarios | `tests/validation/language_equivalence.test.js` — three independently-written JS predicates mirroring each language's literal filter, zero disagreements |
+| 2 | Fully equivalent across all 106 stress-corpus scenarios | Same method, zero disagreements |
+| 3 | **The independently-coded KQL-model and SPL-model outcomes agree on every notification across all 106 stress-corpus scenarios except ONE named, documented divergence (V14-07 — see above). Sigma is NOT equivalent — retained only as a documented, deliberately incomplete correlation.** | Per-notification outcome comparison, not a boolean; see matrix below for the Sigma comparison |
 
 ### Track 3 Sigma-vs-authoritative comparison matrix (curated core, non-experimental)
 
@@ -684,6 +708,104 @@ level of precision this pass targets; both queries were checked example-by-examp
 JS reference oracle's row-level output (see `tests/validation/language_equivalence.test.js`) and
 found to agree on every notification in the full stress corpus.
 
+## Track 3 remediation pass, part 4 (exact multivalue scope intersection)
+
+A fourth follow-up review targeted the ONE remaining documented Track 3 approximation named in
+part 3's "remaining risks" item 5: the SPL scope-downgrade relevance check compared only the
+first element of `mcp.subscription.required_scope` and `mcp.authz.change.removed_scope` via an
+unanchored `mvfind()` regex.
+
+### What inspecting the actual SPL query and its independent model found
+
+Two separate, compounding problems, both in
+`detections/spl/mcp_subscription_authorization_drift.spl`:
+
+1. **A positional bug.** `mvindex(field, 0)` only ever looked at the FIRST tag in each
+   multivalue field. A real overlap sitting anywhere else (e.g. the last position on both sides)
+   was invisible to the check — fixture V14-01 demonstrates this exactly, and V14-02 shows the
+   identical underlying overlap reordered to the first position produces the correct result,
+   proving the bug was purely about position, not the tags themselves.
+2. **A matching bug, independent of the first.** `mvfind()`'s second argument is always a
+   regular expression (verified against Splunk's documented Multivalue eval functions reference),
+   and the query passed a raw scope-tag string as that pattern with no anchors. An unanchored
+   regex search matches as a substring, so a shorter tag could wrongly match inside an unrelated
+   longer one that happens to start the same way — e.g. `"files:read"` matching inside
+   `"files:read_all"`. Fixture V14-05 demonstrates this independently of the positional bug (both
+   tags sit at position 0 in that fixture, so only the matching bug is exercised).
+
+**Checking whether the previous models hid this discrepancy — they did.** The independently-coded
+SPL model in `tests/validation/language_equivalence.test.js` (`splModelResults`) already computed
+a full, exact, order-independent intersection (`rem.filter((s) => req.indexOf(s) >= 0)`) — it did
+NOT reproduce the real query's first-tag/substring bugs. The model was accidentally MORE correct
+than the query it claimed to represent, which meant every "KQL and SPL are equivalent" claim in
+this document and in the test suite was true of the two MODELS but never actually exercised the
+real SPL query's documented limitation, because no multi-tag fixture existed to force the model
+and the query apart. This is now corrected on both sides: the real SPL query is fixed to match
+the model's exact-intersection logic, and the model's missing-vs-empty-evidence check (below) was
+corrected to stop overstating what SPL can actually do.
+
+### The fix
+
+Classic SPL has no built-in set-intersection function over two multivalue fields. The fix
+computes the intersection using `mvmap()` to iterate every value of `removed_scope2`, testing
+EXACT membership in `open_required_scope2` via an anchored (`\A...\z`), literally-quoted
+(`\Q...\E`) `mvfind()` regex — Splunk's regex engine is confirmed PCRE2 (per Splunk's own SPL-
+and-regular-expressions documentation), which supports `\Q...\E` literal quoting, so an arbitrary
+scope-tag string can never be misread as a regex metacharacter sequence. `mvmap()` evaluates
+entirely within the existing row via ordinary `eval` semantics — it never calls `mvexpand`, so it
+cannot multiply rows or duplicate alerts even when several tags overlap at once (V14-08) or a
+side contains a duplicate tag (V14-03). This is documented as a MODEL, not a verified-equivalent
+native query: it has not been executed against a live Splunk instance (native execution remains
+pending project-wide, per README.md), and the query's own header names one caveat this
+methodology cannot rule out (a scope-tag value containing the literal substring `\E`, which is
+outside this project's scope-tag vocabulary and not exercised by any fixture).
+
+### Independently specified tests added (V14-01..V14-08)
+
+| # | Test | Expected outcome | Fixture |
+|---|---|---|---|
+| 1 | Relevant match only in the second/last position | `confirmed_drift` | V14-01 |
+| 2 | Reordered lists producing identical results | `confirmed_drift` (same as V14-01) | V14-02 |
+| 3 | Duplicate tags | `confirmed_drift`, exactly ONE alert row | V14-03 |
+| 4 | No overlap | `evaluated_no_violation` | V14-04 |
+| 5 | Exact strings (`files:read` vs. `files:read_all`) | `evaluated_no_violation` | V14-05 |
+| 6a | Missing scope evidence (field entirely absent) | `insufficient_evidence` (`missing_scope_evidence`) | V14-06 |
+| 6b | Explicitly known empty scope evidence | `evaluated_no_violation` in KQL/oracle; **named SPL divergence**, see below | V14-07 |
+| 7 | Multiple matching tags | `confirmed_drift`, exactly ONE alert row (not one per tag) | V14-08 |
+
+Row-level assertions: `tests/validation/track3_row_regression.test.js`. Two "RESTORED-BUG PROOF"
+tests independently re-derive the OLD first-tag/unanchored-match behavior and show it disagrees
+with the fixed oracle on V14-01 (misses the real overlap) and V14-05 (wrongly matches the
+substring) — direct evidence the regression suite would catch either bug's reintroduction.
+
+### One exact unresolved case identified, not approximated (fixture V14-07)
+
+Distinguishing "no scope evidence was ever recorded" (missing) from "the scope list was
+explicitly recorded as empty" (known-empty) requires the underlying data model to represent both
+states distinctly. KQL's `dynamic` type does: `isnull(dynamic([]))` is `false` and
+`isempty(dynamic([]))` is also documented `false` — an empty array is neither null nor empty in
+Kusto's terms, so it is preserved as a genuine, present, zero-element value distinct from an
+absent field. **Classic Splunk field extraction (spath / `INDEXED_EXTRACTIONS=json`) has no
+equivalent representation** — a field's value is fundamentally a bag of one or more strings, so
+there is no "present with zero values" state to extract into; an explicitly-empty JSON array and
+an absent field are indistinguishable once ingested. This is a genuine, structural platform
+constraint, not a query-logic bug this project's SPL could have been written to avoid, and per
+the explicit instruction to name an unresolved case rather than paper over it with an
+approximation, it is not treated as fixed:
+
+- The real SPL query's `isnull(open_required_scope2) OR isnull(removed_scope2)` check is already
+  the most correct expression available in SPL — no change was needed to that specific
+  comparison, only to the overlap computation it feeds.
+- `tests/validation/language_equivalence.test.js`'s SPL model now encodes this platform
+  constraint explicitly (an empty array is treated the same as absent, for SPL specifically —
+  differently from the KQL model, which correctly treats it as present), and fixture V14-07 is
+  asserted as exactly one NAMED disagreement between the two models — not folded into a "zero
+  disagreements" claim, and not silently excluded from the corpus.
+- A deployment that needs this distinction in SPL would need an additional, project-defined
+  sentinel field (e.g. an explicit boolean or a placeholder scope value) — out of scope for this
+  pass, since it would require a new telemetry field, not a query fix, and is recorded here as
+  future work rather than invented under this instruction's constraints.
+
 ## Remaining risks (unresolved, explicitly not decided in this block)
 
 1. **RESOLVED in "Track 3 remediation pass, part 2" above.** Track 3's principal-only join for
@@ -709,13 +831,18 @@ found to agree on every notification in the full stress corpus.
    `all_principal_bindings` are both removed/replaced: the sole-candidate fallback is gone
    entirely (fixture V13-03), and `all_principal_bindings` now uses a precise effective-time
    interval check in both KQL and SPL, matching the JS oracle (fixture V13-06).
-5. **A deployment relying on genuinely multi-tag `mcp.subscription.required_scope`/
-   `mcp.authz.change.removed_scope` values should be aware the SPL scope-downgrade relevance
-   check is an approximation** (it compares each side's first scope tag, correct for this
-   project's single-tag fixtures) — see `detections/spl/mcp_subscription_authorization_drift.spl`'s
-   own header comment. The JS oracle and KQL (via `set_intersect`) both implement the precise
-   any-element intersection; only the SPL reference query has this specific, narrower
-   simplification, because SPL has no built-in set-intersection over two multivalue fields.
+5. **RESOLVED in "Track 3 remediation pass, part 4" above, with one exact case named rather than
+   approximated away.** The SPL scope-downgrade relevance check no longer compares only each
+   side's first scope tag: it now computes an exact, order-independent, anchored-literal-quoted
+   multivalue intersection via `mvmap()`/`mvfind()`, verified against Splunk's documented
+   Multivalue eval functions reference (fixtures V14-01..V14-05, V14-08). **One genuine,
+   structural SPL/Splunk platform limitation could not be fixed and is named, not hidden**:
+   classic Splunk field extraction cannot represent "field present with an explicitly empty
+   value list" distinct from "field absent," unlike KQL's `dynamic` type — so an explicitly-empty
+   `required_scope`/`removed_scope` reports `insufficient_evidence` in SPL where KQL and the JS
+   oracle correctly report `evaluated_no_violation` (fixture V14-07). This is an intentional,
+   documented divergence asserted by name in `tests/validation/language_equivalence.test.js`, not
+   a defect and not silently swept into a "fully equivalent" claim.
 
 ## Whether Block 1–5 assumptions changed
 
