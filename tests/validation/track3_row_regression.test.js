@@ -82,13 +82,15 @@ test('V11-04: expiry precedes a later-recorded, future revocation -- independent
   ]);
 });
 
-test('V11-05: revocation fires with no retained open event at all', () => {
-  const p = hmacHash('principal:alice-v11-05');
-  const rows = highRows(byId('V11-05').events).map(stripUndefined);
-  assert.equal(byId('V11-05').events.some((e) => e['event.name'] === 'mcp.subscription.open'), false, 'fixture must genuinely have no open event');
-  assert.deepEqual(rows, [
-    { subscription_id: '10005', principal_hash: p, notif_time: '2026-10-01T19:05:00.000Z', boundary: 'effective_at', boundary_time: '2026-10-01T19:00:00.000Z' },
-  ]);
+test('V11-05 (RECLASSIFIED, ambiguous legacy telemetry): no retained open event AND no scope evidence now reports insufficient_evidence, not confirmed_drift', () => {
+  const events = byId('V11-05').events;
+  assert.equal(events.some((e) => e['event.name'] === 'mcp.subscription.open'), false, 'fixture must genuinely have no open event');
+  assert.deepEqual(highRows(events), [], 'no confirmed_drift rows -- this is the exact principal-only join the scope-aware correction forbids');
+  const { track3Resolution } = require('../detections/oracle');
+  const { results, coverage } = track3Resolution(events);
+  assert.equal(coverage.insufficientEvidence, 1);
+  assert.equal(results[0].outcome, 'insufficient_evidence');
+  assert.equal(results[0].reason, 'no_invalidity_evidence', 'zero known bindings for this principal and no directly-scoped evidence on the notification itself');
 });
 
 test('V11-06: a close on a DIFFERENT subscription_id (same principal) does not suppress the still-open one', () => {
@@ -120,12 +122,26 @@ test('V11-10: duplicate close events -- notification before both closes fires, n
   ]);
 });
 
-test('V11-11: known, unresolved cross-subscription risk -- mechanically fires on the still-valid subscription\'s notification', () => {
-  const p = hmacHash('principal:alice-v11-11');
-  const rows = highRows(byId('V11-11').events).map(stripUndefined);
-  assert.deepEqual(rows, [
-    { subscription_id: '10013', principal_hash: p, notif_time: '2026-10-01T20:50:00.000Z', boundary: 'effective_at', boundary_time: '2026-10-01T20:45:00.000Z' },
-  ], 'documents the mechanical (unresolved) behavior -- this is a reported risk, not a bug being silently patched over');
+test('V11-11 (RECLASSIFIED, retained as ambiguous legacy telemetry): two concurrent bindings, no scope evidence -- both instances report insufficient_evidence, never a principal-only confirmed fire', () => {
+  const events = byId('V11-11').events;
+  assert.deepEqual(highRows(events), [], 'the scope-aware correction never falls back to a principal-only confirmed-drift join');
+  const { track3Resolution } = require('../detections/oracle');
+  const { results, coverage } = track3Resolution(events);
+  assert.equal(coverage.insufficientEvidence, 1, 'exactly one notification exists in this fixture (on subscription B)');
+  assert.equal(results[0].subscriptionId, '10013');
+  assert.equal(results[0].outcome, 'insufficient_evidence');
+  assert.equal(results[0].reason, 'ambiguous_scope', 'two candidate bindings exist for this principal at the change\'s effective_at, and the change names neither explicitly');
+});
+
+test('V12-13: the corrected counterpart to V11-11 -- explicit affected_binding_ids resolves the identical two-concurrent-subscription shape cleanly', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const events = byId('V12-13').events;
+  const { results } = track3Resolution(events);
+  const confirmed = results.filter((r) => r.outcome === 'confirmed_drift');
+  const noViolation = results.filter((r) => r.outcome === 'evaluated_no_violation');
+  assert.equal(confirmed.length, 1, 'exactly the revoked binding\'s subscription confirms drift');
+  assert.equal(noViolation.length, 1, 'the untouched binding\'s subscription is definitively cleared, not left ambiguous');
+  assert.notEqual(confirmed[0].subscriptionId, noViolation[0].subscriptionId);
 });
 
 // ---------------------------------------------------------------------------------------------

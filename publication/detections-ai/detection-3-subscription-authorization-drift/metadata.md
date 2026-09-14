@@ -26,15 +26,22 @@ continued event visibility past the point authorization ceased to be valid.
 
 ## ⚠️ Deployment prerequisite — read before enabling as a paging alert
 
-This high-confidence rule is appropriate **only** where an authoritative `revoked`, `expired`,
-or `scope_downgraded` `effective_at` means the subscription is genuinely no longer authorized to
-receive relevant notifications at and after that instant. **If your organization has grace
-periods, grandfathered/open-stream exemptions, or other policy semantics that legitimately
-permit delivery after that timestamp, this rule will fire on that legitimate traffic** and
-requires environment-specific tuning (a query-level grace-period constant or exemption
-allowlist) before deployment — no such field exists in the underlying telemetry contract to
-express this automatically. Confirmed in this project's own stress testing (fixtures V5-02,
-V5-09 — `docs/validation-report.md`, View 2).
+This rule now reports one of three outcomes per notification — `ConfirmedDrift`,
+`EvaluatedNoViolation`, or `InsufficientEvidence` — rather than a single fired/not-fired boolean;
+only `ConfirmedDrift` warrants a page. It is appropriate to page on **only** where an
+authoritative `revoked`/`expired` `effective_at`, or a `scope_downgraded` change proven relevant
+via `required_scope`/`removed_scope`, means the subscription is genuinely no longer authorized
+to receive relevant notifications at and after that instant. **If your organization has
+grandfathered/open-stream exemptions or other policy semantics that legitimately permit delivery
+after that timestamp, this rule will still report `ConfirmedDrift` on that legitimate traffic**
+and requires environment-specific tuning (a query-level exemption allowlist) before deployment —
+no such field exists in the underlying telemetry contract to express this automatically.
+Confirmed in this project's own stress testing (fixture V5-09 — `docs/validation-report.md`,
+View 2). **This rule also depends on the new `mcp.authz.binding_id`/`mcp.subscription.required_scope`/
+`mcp.authz.change.affected_scope` fields (see "Required fields" below) to resolve revocation
+scope precisely — a deployment that has not instrumented them yet will see more
+`InsufficientEvidence` results and fewer resolved `ConfirmedDrift`/`EvaluatedNoViolation` ones,
+which is the safe default, not a rule defect.**
 
 ## Data source
 
@@ -45,152 +52,313 @@ assumed to exist by default in Sentinel, Splunk, or OpenTelemetry deployments.**
 
 | Field | Source category |
 |---|---|
-| `mcp.subscription.id`, `principal.id_hash` | join/group-by keys (MCP wire value + project-defined pseudonymized field) |
+| `mcp.subscription.instance_id`, `principal.id_hash` | **(new, scope-aware correction)** authoritative join/group-by keys — `instance_id` is project-defined (not the connection-scoped wire `mcp.subscription.id`); `principal.id_hash` is project-defined pseudonymized |
+| `mcp.authz.binding_id` | **(new)** project-defined — the specific authorization binding backing an instance; required on `.open`, optional-if-proven on `.notification` |
+| `mcp.authz.change.affected_scope`, `affected_binding_ids` | **(new)** project-defined — resolves WHICH binding(s) a change affects; `unknown`/absent triggers a sole-candidate fallback, never a blanket principal-wide assumption |
+| `mcp.subscription.required_scope`, `mcp.authz.change.removed_scope` | **(new)** project-defined — required to determine whether a `scope_downgraded` change is relevant to a given instance |
 | `mcp.authz.change.effective_at`, `mcp.authz.change.timing_confidence` | project-defined — preferred boundary when `timing_confidence = authoritative` |
-| `mcp.authz.change.type` | project-defined — must be `revoked`/`expired`/`scope_downgraded` to count as invalidating (`scope_upgraded` must NOT, per a confirmed Block 6 fix) |
-| `mcp.authz.valid_until` | project-defined — expiry boundary used when no change event exists |
+| `mcp.authz.change.type` | project-defined — must be `revoked`/`expired`/`scope_downgraded` to count as invalidating (`scope_upgraded` must NOT) |
+| `mcp.authz.valid_until` | project-defined — expiry boundary; may also appear on `.notification` when `binding_id` is present (proven rebinding) |
 | `mcp.subscription.notification_type`, notification's own timestamp | MCP wire value / envelope field |
 | `mcp.subscription.close.reason` | project-defined — used to suppress a correctly-closed stream |
+
+**Legacy-compatibility fallbacks exist for every new field above** (an event predating a field
+is not rejected, just resolved more conservatively — see `telemetry/schema.md` §5 and
+`telemetry/correlation.md`). `mcp.authz.grant_snapshot_hash` (pre-existing field) is drift-hinting
+only and MUST NOT be used as an identity/join key — that role belongs to `mcp.authz.binding_id`.
 
 ## Query — KQL (authoritative)
 
 `MCPSecurityAudit` is a **project/example table name — not a built-in Microsoft Sentinel
-table.** See `telemetry/field-mapping.md`.
+table.** See `telemetry/field-mapping.md`. Implements `telemetry/correlation.md`'s "Resolving
+affected bindings" reference algorithm — see that document and
+`detections/kql/mcp_subscription_authorization_drift.kql`'s own header comment for the full
+citation trail and the documented KQL-only "binding candidates ever observed" simplification.
 
 ```kql
-let AuthoritativeChanges = MCPSecurityAudit
-| where ['event.name'] == "mcp.subscription.authorization_change"
-| where ['mcp.authz.change.timing_confidence'] == "authoritative"
-| where ['mcp.authz.change.type'] in ("revoked", "expired", "scope_downgraded")
-| project
-    principal_hash = ['principal.id_hash'],
-    effective_at = todatetime(['mcp.authz.change.effective_at']),
-    change_type = ['mcp.authz.change.type'],
-    change_source = ['mcp.authz.change.source'];
+let InvalidatingTypes = dynamic(["revoked", "expired", "scope_downgraded"]);
 
-let ExpiryBoundaries = MCPSecurityAudit
+let Opens = MCPSecurityAudit
 | where ['event.name'] == "mcp.subscription.open"
-| where isnotempty(['mcp.authz.valid_until'])
 | project
-    subscription_id = tostring(['mcp.subscription.id']),
-    principal_hash = ['principal.id_hash'],
-    valid_until = todatetime(['mcp.authz.valid_until']);
+    subscriptionId = tostring(['mcp.subscription.id']),
+    instanceId = tostring(coalesce(['mcp.subscription.instance_id'], strcat(['principal.id_hash'], ":", ['mcp.subscription.id']))),
+    principalHash = ['principal.id_hash'],
+    bindingId = tostring(coalesce(['mcp.authz.binding_id'], strcat("legacy:", ['principal.id_hash'], ":", ['mcp.subscription.id']))),
+    requiredScope = ['mcp.subscription.required_scope'],
+    validUntil = todatetime(coalesce(['mcp.authz.valid_until'], ['mcp.authz.grant_expiry'])),
+    openTime = todatetime(['timestamp']),
+    keyId = ['security.hash.key_id'];
 
 let Notifications = MCPSecurityAudit
 | where ['event.name'] == "mcp.subscription.notification"
 | project
-    subscription_id = tostring(['mcp.subscription.id']),
-    principal_hash = ['principal.id_hash'],
-    notif_time = todatetime(['timestamp']),
-    notification_type = ['mcp.subscription.notification_type'];
+    subscriptionId = tostring(['mcp.subscription.id']),
+    instanceId = tostring(coalesce(['mcp.subscription.instance_id'], strcat(['principal.id_hash'], ":", ['mcp.subscription.id']))),
+    principalHash = ['principal.id_hash'],
+    notifTime = todatetime(['timestamp']),
+    notificationType = ['mcp.subscription.notification_type'],
+    ownBindingId = tostring(['mcp.authz.binding_id']),
+    ownValidUntil = todatetime(['mcp.authz.valid_until']),
+    keyId = ['security.hash.key_id'];
 
-let Closes = MCPSecurityAudit
+// Pre-aggregated to the earliest close per instance BEFORE any join -- see the KQL file's own
+// comment for why joining raw close rows directly can multiply/mis-suppress.
+let EarliestClose = MCPSecurityAudit
 | where ['event.name'] == "mcp.subscription.close"
+| extend instanceId = tostring(coalesce(['mcp.subscription.instance_id'], strcat(['principal.id_hash'], ":", ['mcp.subscription.id']))), principalHash = ['principal.id_hash'], closeTime = todatetime(['timestamp'])
+| summarize earliestCloseTime = min(closeTime) by instanceId, principalHash;
+
+let Changes = MCPSecurityAudit
+| where ['event.name'] == "mcp.subscription.authorization_change"
+| where ['mcp.authz.change.timing_confidence'] == "authoritative"
+| where ['mcp.authz.change.type'] in (InvalidatingTypes)
 | project
-    subscription_id = tostring(['mcp.subscription.id']),
-    principal_hash = ['principal.id_hash'],
-    close_time = todatetime(['timestamp']);
+    principalHash = ['principal.id_hash'],
+    changeType = ['mcp.authz.change.type'],
+    changeSource = ['mcp.authz.change.source'],
+    effectiveAt = todatetime(['mcp.authz.change.effective_at']),
+    affectedScope = tostring(coalesce(['mcp.authz.change.affected_scope'], "unknown")),
+    affectedBindingIds = coalesce(['mcp.authz.change.affected_binding_ids'], dynamic([])),
+    removedScope = ['mcp.authz.change.removed_scope'],
+    keyId = ['security.hash.key_id'];
 
-// FIX (Track 3 remediation pass): joins on BOTH subscription_id AND principal_hash, not
-// subscription_id alone -- mcp.subscription.id is only a per-connection JSON-RPC id and is not
-// guaranteed unique across different principals' connections. principal.id_hash is already a
-// required field on mcp.subscription.close (telemetry/schema.md).
-let ClosedBeforeNotification = Notifications
-| join kind=leftouter (Closes) on subscription_id, principal_hash
-| where isnotempty(close_time) and close_time <= notif_time
-| distinct subscription_id, principal_hash, notif_time;
+// Conflicting-evidence pre-pass: a binding named invalidated by one authoritative change and
+// ALSO named scope_upgraded by another cannot be resolved by picking a side.
+let InvalidatedBindings = Changes
+| where affectedScope == "binding" and changeType in (InvalidatingTypes)
+| mv-expand bindingId = affectedBindingIds to typeof(string)
+| distinct bindingId;
+let UpgradedBindings = Changes
+| where affectedScope == "binding" and changeType == "scope_upgraded"
+| mv-expand bindingId = affectedBindingIds to typeof(string)
+| distinct bindingId;
+let ConflictedBindings = InvalidatedBindings | join kind=inner (UpgradedBindings) on bindingId | distinct bindingId;
 
-let RevocationDrift = Notifications
-| join kind=inner (AuthoritativeChanges) on principal_hash
-| where notif_time > effective_at
-| join kind=leftanti (ClosedBeforeNotification) on subscription_id, principal_hash, notif_time
-| extend Confidence = "high", Boundary = "effective_at", BoundaryTime = effective_at,
-         AuthzChangeType = change_type, AuthzChangeSource = change_source;
+// Every binding ever observed for a principal (documented simplification -- see the KQL file).
+let KnownBindingsByPrincipal = Opens
+| project principalHash, bindingId
+| union (Notifications | where isnotempty(ownBindingId) | project principalHash, bindingId = ownBindingId)
+| distinct principalHash, bindingId;
+let BindingCountByPrincipal = KnownBindingsByPrincipal | summarize CandidateCount = dcount(bindingId), Candidates = make_set(bindingId) by principalHash;
 
-let ExpiryDrift = Notifications
-| join kind=inner (ExpiryBoundaries) on subscription_id, principal_hash
-| where notif_time > valid_until
-| join kind=leftanti (ClosedBeforeNotification) on subscription_id, principal_hash, notif_time
-| extend Confidence = "high", Boundary = "valid_until", BoundaryTime = valid_until,
-         AuthzChangeType = "expired", AuthzChangeSource = "token_expiry_computed";
+let NotificationsResolved = Notifications
+| join kind=leftouter (Opens | project instanceId, openBindingId = bindingId, openValidUntil = validUntil, requiredScope, openKeyId = keyId) on instanceId
+| extend effectiveBindingId = coalesce(ownBindingId, openBindingId)
+| extend effectiveValidUntil = iif(isnotempty(ownBindingId) and isnotnull(ownValidUntil), ownValidUntil, openValidUntil)
+| extend epochMismatch = isnotempty(openKeyId) and isnotempty(keyId) and openKeyId != keyId
+| extend isConflicted = effectiveBindingId in (ConflictedBindings);
 
-let HighConfidenceDrift = RevocationDrift
-| project subscription_id, principal_hash, notif_time, notification_type, Confidence, Boundary, BoundaryTime, AuthzChangeType, AuthzChangeSource
-| union (ExpiryDrift | project subscription_id, principal_hash, notif_time, notification_type, Confidence, Boundary, BoundaryTime, AuthzChangeType, AuthzChangeSource);
+// Signal 1: expiry leg. A suppressed (closed-before) crossing is EvaluatedNoViolation, never
+// silently dropped.
+let ExpirySignals = NotificationsResolved
+| where isnotnull(effectiveValidUntil) and not(epochMismatch)
+| join kind=leftouter (EarliestClose) on instanceId, principalHash
+| extend crossed = notifTime > effectiveValidUntil,
+         suppressed = isnotnull(earliestCloseTime) and earliestCloseTime <= notifTime
+| extend Outcome = iif(crossed and not(suppressed), "ConfirmedDrift", "EvaluatedNoViolation"),
+         Priority = iif(crossed and not(suppressed), 3, 1),
+         Boundary = "valid_until", BoundaryTime = effectiveValidUntil, Reason = ""
+| distinct instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId, Outcome, Priority, Boundary, BoundaryTime, changeType1=tostring(""), changeSource1=tostring(""), Reason;
 
-HighConfidenceDrift
-| extend Severity = "High", DetectionTrack = "Track3_SubscriptionAuthorizationDrift"
-| project notif_time, Severity, DetectionTrack, subscription_id, principal_hash, notification_type,
-    Boundary, BoundaryTime, AuthzChangeType, AuthzChangeSource, Confidence
-| order by notif_time asc
+// Signal 2: epoch mismatch.
+let EpochSignals = NotificationsResolved
+| where epochMismatch
+| project instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
+    Outcome = "InsufficientEvidence", Priority = 2, Boundary = "", BoundaryTime = datetime(null),
+    changeType1 = "", changeSource1 = "", Reason = "incompatible_hash_epoch";
+
+// Signal 3: revocation / downgrade leg, expanded per Changes row.
+let RevocationCandidates = NotificationsResolved
+| where not(epochMismatch)
+| join kind=inner (Changes) on principalHash
+| join kind=leftouter (BindingCountByPrincipal) on principalHash
+| extend Applies = case(
+    isConflicted, "conflict",
+    affectedScope == "all_principal_bindings", "yes",
+    affectedScope == "binding", iif(set_has_element(affectedBindingIds, effectiveBindingId), "yes", "no"),
+    CandidateCount == 1, iif(isempty(effectiveBindingId) or set_has_element(Candidates, effectiveBindingId), "yes", "no"),
+    CandidateCount > 1, "ambiguous",
+    "no")
+| where Applies != "no";
+
+let RevocationSignals = RevocationCandidates
+| where Applies == "yes"
+| extend ScopeOk = case(
+    changeType != "scope_downgraded", "yes",
+    isempty(requiredScope) or isempty(removedScope), "missing",
+    array_length(set_intersect(requiredScope, removedScope)) > 0, "yes",
+    "irrelevant")
+| join kind=leftouter (EarliestClose) on instanceId, principalHash
+| extend crossed = notifTime > effectiveAt,
+         suppressed = isnotnull(earliestCloseTime) and earliestCloseTime <= notifTime
+| extend Outcome = case(
+    ScopeOk == "missing", "InsufficientEvidence",
+    ScopeOk == "irrelevant", "EvaluatedNoViolation",
+    crossed and not(suppressed), "ConfirmedDrift",
+    "EvaluatedNoViolation")
+| extend Priority = case(Outcome == "ConfirmedDrift", 3, Outcome == "InsufficientEvidence", 2, 1)
+| extend Reason = iif(ScopeOk == "missing", "missing_scope_evidence", "")
+| project instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
+    Outcome, Priority, Boundary = "effective_at", BoundaryTime = effectiveAt,
+    changeType1 = tostring(changeType), changeSource1 = tostring(changeSource), Reason;
+
+let ConflictSignals = RevocationCandidates
+| where Applies == "conflict"
+| project instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
+    Outcome = "InsufficientEvidence", Priority = 2, Boundary = "", BoundaryTime = datetime(null),
+    changeType1 = "", changeSource1 = "", Reason = "conflicting_evidence";
+
+let AmbiguousSignals = RevocationCandidates
+| where Applies == "ambiguous"
+| project instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
+    Outcome = "InsufficientEvidence", Priority = 2, Boundary = "", BoundaryTime = datetime(null),
+    changeType1 = "", changeSource1 = "", Reason = "ambiguous_scope";
+
+// Baseline: every notification gets a floor row so summarize always has something to pick.
+let BaselineSignals = NotificationsResolved
+| project instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
+    Outcome = "InsufficientEvidence", Priority = 0, Boundary = "", BoundaryTime = datetime(null),
+    changeType1 = "", changeSource1 = "", Reason = "no_invalidity_evidence";
+
+let AllSignals = union ExpirySignals, EpochSignals, RevocationSignals, ConflictSignals, AmbiguousSignals, BaselineSignals;
+
+// One row per (instance, notification): the highest-priority signal wins; ties at the max
+// (e.g. revocation AND expiry both ConfirmedDrift) are both retained.
+AllSignals
+| summarize MaxPriority = max(Priority) by instanceId, subscriptionId, principalHash, notifTime, notificationType
+| join kind=inner (AllSignals) on instanceId, subscriptionId, principalHash, notifTime, notificationType
+| where Priority == MaxPriority
+| distinct instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
+    Outcome, Boundary, BoundaryTime, changeType1, changeSource1, Reason
+| extend Severity = case(Outcome == "ConfirmedDrift", "High", Outcome == "InsufficientEvidence", "Medium", "Informational"),
+         DetectionTrack = "Track3_SubscriptionAuthorizationDrift"
+| project
+    notifTime, Outcome, Severity, DetectionTrack, instanceId, subscriptionId, principalHash,
+    notificationType, BindingId = effectiveBindingId, Boundary, BoundaryTime,
+    AuthzChangeType = changeType1, AuthzChangeSource = changeSource1, Reason
+| order by notifTime asc
 ```
 
-A separate, clearly-labeled `detected_at`-only informational query (never merged into the above)
-is in the full file: `detections/kql/mcp_subscription_authorization_drift.kql`.
+A separate, clearly-labeled `detected_at`-only informational note (never promoted into the query
+above at all, by design) is in the full file's closing comment block:
+`detections/kql/mcp_subscription_authorization_drift.kql`.
 
 ## Query — SPL (authoritative)
 
 `index=mcp_security_audit sourcetype=mcp:audit:json` is an **explicit placeholder — Splunk does
-not natively emit MCP security audit events.**
+not natively emit MCP security audit events.** This SPL query is a direct STRUCTURAL PORT of the
+KQL query above for this pass (same tables, same resolution algorithm, same documented
+simplification), not an independent re-derivation from first principles — so the two stay
+honestly comparable rather than accidentally diverging in ways neither author intended.
 
 ```spl
-index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.notification"
-| rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
-    "mcp.subscription.notification_type" as notification_type
-| eval notif_time=_time
-| join type=inner max=0 principal_hash
-    [ search index=mcp_security_audit sourcetype=mcp:audit:json
-        "event.name"="mcp.subscription.authorization_change"
+index=mcp_security_audit sourcetype=mcp:audit:json
+| eval instance_id=coalesce('mcp.subscription.instance_id', 'principal.id_hash'.":".'mcp.subscription.id')
+| eval key_id='security.hash.key_id'
+| eval is_open=if('event.name'=="mcp.subscription.open", 1, 0)
+| eval open_binding_id=if(is_open=1, coalesce('mcp.authz.binding_id', "legacy:"."principal.id_hash".":".'mcp.subscription.id'), null())
+| eval open_required_scope=if(is_open=1, 'mcp.subscription.required_scope', null())
+| eval open_valid_until=if(is_open=1, strptime(coalesce('mcp.authz.valid_until','mcp.authz.grant_expiry'), "%Y-%m-%dT%H:%M:%S.%3QZ"), null())
+| eval open_key_id=if(is_open=1, key_id, null())
+| eval is_notif=if('event.name'=="mcp.subscription.notification", 1, 0)
+| eval own_binding_id=if(is_notif=1, 'mcp.authz.binding_id', null())
+| eval own_valid_until=if(is_notif=1 AND isnotnull('mcp.authz.binding_id'), strptime('mcp.authz.valid_until', "%Y-%m-%dT%H:%M:%S.%3QZ"), null())
+| eval notif_time=if(is_notif=1, _time, null())
+| eval is_close=if('event.name'=="mcp.subscription.close", 1, 0)
+| eval close_time=if(is_close=1, _time, null())
+| eval is_change=if('event.name'=="mcp.subscription.authorization_change" AND 'mcp.authz.change.timing_confidence'=="authoritative" AND ('mcp.authz.change.type'="revoked" OR 'mcp.authz.change.type'="expired" OR 'mcp.authz.change.type'="scope_downgraded"), 1, 0)
+| eval affected_scope=if(is_change=1, coalesce('mcp.authz.change.affected_scope', "unknown"), null())
+| eventstats min(close_time) as earliest_close_time by instance_id, "principal.id_hash"
+| eval known_binding_id=coalesce(open_binding_id, own_binding_id)
+| eventstats dc(known_binding_id) as candidate_count, values(known_binding_id) as candidates by "principal.id_hash"
+| eval invalidated_marker=if(is_change=1 AND affected_scope=="binding" AND ('mcp.authz.change.type'="revoked" OR 'mcp.authz.change.type'="expired" OR 'mcp.authz.change.type'="scope_downgraded"), 'mcp.authz.change.affected_binding_ids', null())
+| eval upgraded_marker=if(is_change=1 AND affected_scope=="binding" AND 'mcp.authz.change.type'="scope_upgraded", 'mcp.authz.change.affected_binding_ids', null())
+| eventstats values(invalidated_marker) as all_invalidated_bindings, values(upgraded_marker) as all_upgraded_bindings
+| where is_notif=1
+| join type=left instance_id
+    [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.open"
+      | eval instance_id=coalesce('mcp.subscription.instance_id', 'principal.id_hash'.":".'mcp.subscription.id')
+      | eval open_binding_id2=coalesce('mcp.authz.binding_id', "legacy:"."principal.id_hash".":".'mcp.subscription.id')
+      | eval open_required_scope2='mcp.subscription.required_scope'
+      | eval open_valid_until2=strptime(coalesce('mcp.authz.valid_until','mcp.authz.grant_expiry'), "%Y-%m-%dT%H:%M:%S.%3QZ")
+      | eval open_key_id2='security.hash.key_id'
+      | fields instance_id open_binding_id2 open_required_scope2 open_valid_until2 open_key_id2 ]
+| eval effective_binding_id=coalesce(own_binding_id, open_binding_id2)
+| eval effective_valid_until=if(isnotnull(own_binding_id) AND isnotnull(own_valid_until), own_valid_until, open_valid_until2)
+| eval epoch_mismatch=if(isnotnull(open_key_id2) AND isnotnull(key_id) AND open_key_id2!=key_id, 1, 0)
+| eval is_conflicted=if(isnotnull(effective_binding_id) AND mvfind(all_invalidated_bindings, effective_binding_id)>=0 AND mvfind(all_upgraded_bindings, effective_binding_id)>=0, 1, 0)
+| eval expiry_applicable=if(isnotnull(effective_valid_until) AND epoch_mismatch=0, 1, 0)
+| eval expiry_crossed=if(expiry_applicable=1 AND notif_time>effective_valid_until, 1, 0)
+| eval expiry_suppressed=if(isnotnull(earliest_close_time) AND earliest_close_time<=notif_time, 1, 0)
+| eval expiry_outcome=case(expiry_applicable=0, null(), expiry_crossed=1 AND expiry_suppressed=0, "ConfirmedDrift", 1=1, "EvaluatedNoViolation")
+| eval expiry_priority=case(expiry_outcome=="ConfirmedDrift", 3, expiry_outcome=="EvaluatedNoViolation", 1, 1=1, null())
+| eval epoch_priority=if(epoch_mismatch=1, 2, null())
+| join type=left "principal.id_hash"
+    [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.authorization_change"
         "mcp.authz.change.timing_confidence"="authoritative"
         ("mcp.authz.change.type"="revoked" OR "mcp.authz.change.type"="expired" OR "mcp.authz.change.type"="scope_downgraded")
-      | rename "principal.id_hash" as principal_hash,
-          "mcp.authz.change.type" as change_type, "mcp.authz.change.source" as change_source
-      | eval effective_at=strptime('mcp.authz.change.effective_at', "%Y-%m-%dT%H:%M:%S.%3QZ")
-      | fields principal_hash effective_at change_type change_source ]
-| where notif_time > effective_at
-| join type=left subscription_id principal_hash
-    [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
-      | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
-      | eval close_time=_time
-      | stats min(close_time) as earliest_close_time by subscription_id, principal_hash ]
-| where isnull(earliest_close_time) OR earliest_close_time > notif_time
-| eval Boundary="effective_at", BoundaryTime=strftime(effective_at, "%Y-%m-%dT%H:%M:%S.%3QZ")
-| eval Confidence="high"
-| table notif_time subscription_id principal_hash notification_type Boundary BoundaryTime
-    change_type change_source Confidence
-| append
-    [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.notification"
-      | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash,
-          "mcp.subscription.notification_type" as notification_type
-      | eval notif_time=_time
-      | join type=inner max=0 subscription_id principal_hash
-          [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.open"
-              "mcp.authz.valid_until"=*
-            | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
-            | eval valid_until=strptime('mcp.authz.valid_until', "%Y-%m-%dT%H:%M:%S.%3QZ")
-            | fields subscription_id principal_hash valid_until ]
-      | where notif_time > valid_until
-      | join type=left subscription_id principal_hash
-          [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.close"
-            | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash
-            | eval close_time=_time
-            | stats min(close_time) as earliest_close_time by subscription_id, principal_hash ]
-      | where isnull(earliest_close_time) OR earliest_close_time > notif_time
-      | eval Boundary="valid_until", BoundaryTime=strftime(valid_until, "%Y-%m-%dT%H:%M:%S.%3QZ")
-      | eval change_type="expired", change_source="token_expiry_computed", Confidence="high"
-      | table notif_time subscription_id principal_hash notification_type Boundary BoundaryTime
-          change_type change_source Confidence ]
-| eval Severity="High", DetectionTrack="Track3_SubscriptionAuthorizationDrift"
+      | eval change_effective_at2=strptime('mcp.authz.change.effective_at', "%Y-%m-%dT%H:%M:%S.%3QZ")
+      | eval affected_scope2=coalesce('mcp.authz.change.affected_scope', "unknown")
+      | rename "mcp.authz.change.affected_binding_ids" as affected_binding_ids2, "mcp.authz.change.removed_scope" as removed_scope2,
+          "mcp.authz.change.type" as change_type2, "mcp.authz.change.source" as change_source2
+      | fields "principal.id_hash" change_effective_at2 affected_scope2 affected_binding_ids2 removed_scope2 change_type2 change_source2 ]
+| eval rev_applies=case(
+    is_conflicted=1, "conflict",
+    affected_scope2=="all_principal_bindings", "yes",
+    affected_scope2=="binding", if(mvfind(affected_binding_ids2, effective_binding_id)>=0, "yes", "no"),
+    candidate_count==1, if(isnull(effective_binding_id) OR mvfind(candidates, effective_binding_id)>=0, "yes", "no"),
+    candidate_count>1, "ambiguous",
+    1=1, "no")
+| eval rev_scope_ok=case(
+    rev_applies!="yes", null(),
+    change_type2!="scope_downgraded", "yes",
+    isnull(open_required_scope2) OR isnull(removed_scope2), "missing",
+    mvfind(removed_scope2, mvindex(open_required_scope2,0))>=0 OR mvfind(open_required_scope2, mvindex(removed_scope2,0))>=0, "yes",
+    1=1, "irrelevant")
+| eval rev_crossed=if(rev_applies=="yes" AND notif_time>change_effective_at2, 1, 0)
+| eval rev_suppressed=if(isnotnull(earliest_close_time) AND earliest_close_time<=notif_time, 1, 0)
+| eval rev_outcome=case(
+    rev_applies=="ambiguous", "InsufficientEvidence",
+    rev_applies=="conflict", "InsufficientEvidence",
+    rev_applies=="yes" AND rev_scope_ok=="missing", "InsufficientEvidence",
+    rev_applies=="yes" AND rev_scope_ok=="irrelevant", "EvaluatedNoViolation",
+    rev_applies=="yes" AND rev_crossed=1 AND rev_suppressed=0, "ConfirmedDrift",
+    rev_applies=="yes", "EvaluatedNoViolation",
+    1=1, null())
+| eval rev_reason=case(rev_applies=="ambiguous", "ambiguous_scope", rev_applies=="conflict", "conflicting_evidence", rev_applies=="yes" AND rev_scope_ok=="missing", "missing_scope_evidence", 1=1, "")
+| eval rev_priority=case(rev_outcome=="ConfirmedDrift", 3, rev_outcome=="InsufficientEvidence", 2, rev_outcome=="EvaluatedNoViolation", 1, 1=1, null())
+| eval overall_priority=case(
+    coalesce(expiry_priority,0)>=coalesce(rev_priority,0) AND coalesce(expiry_priority,0)>=coalesce(epoch_priority,0), coalesce(expiry_priority,0),
+    coalesce(rev_priority,0)>=coalesce(epoch_priority,0), coalesce(rev_priority,0),
+    1=1, coalesce(epoch_priority,0))
+| eval Outcome=case(
+    overall_priority=3 AND rev_priority=3, "ConfirmedDrift",
+    overall_priority=3 AND expiry_priority=3, "ConfirmedDrift",
+    overall_priority=2 AND rev_priority=2, "InsufficientEvidence",
+    overall_priority=2 AND epoch_priority=2, "InsufficientEvidence",
+    overall_priority=1, "EvaluatedNoViolation",
+    1=1, "InsufficientEvidence")
+| eval Reason=case(Outcome=="InsufficientEvidence" AND overall_priority=2 AND isnotnull(rev_reason) AND rev_reason!="", rev_reason, Outcome=="InsufficientEvidence" AND epoch_priority=2, "incompatible_hash_epoch", Outcome=="InsufficientEvidence" AND overall_priority=0, "no_invalidity_evidence", 1=1, "")
+| eval Boundary=case(overall_priority=3 AND rev_priority=3, "effective_at", overall_priority=3 AND expiry_priority=3, "valid_until", 1=1, "")
+| eval BoundaryTime=case(Boundary=="effective_at", strftime(change_effective_at2, "%Y-%m-%dT%H:%M:%S.%3QZ"), Boundary=="valid_until", strftime(effective_valid_until, "%Y-%m-%dT%H:%M:%S.%3QZ"), 1=1, "")
+| eval Severity=case(Outcome=="ConfirmedDrift", "High", Outcome=="InsufficientEvidence", "Medium", 1=1, "Informational")
+| eval DetectionTrack="Track3_SubscriptionAuthorizationDrift"
+| eval row_priority=case(Outcome=="ConfirmedDrift", 3, Outcome=="InsufficientEvidence", 2, Outcome=="EvaluatedNoViolation", 1, 1=1, 0)
+| eventstats max(row_priority) as max_row_priority by instance_id, notif_time
+| where row_priority=max_row_priority
+| dedup instance_id notif_time Outcome Boundary BoundaryTime
+| rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash, "mcp.subscription.notification_type" as notification_type
+| table notif_time Outcome Severity DetectionTrack instance_id subscription_id principal_hash notification_type effective_binding_id Boundary BoundaryTime change_type2 change_source2 Reason
+| rename effective_binding_id as BindingId, change_type2 as AuthzChangeType, change_source2 as AuthzChangeSource
 | sort 0 notif_time
 ```
 
-**FIXES (Track 3 remediation pass), see `docs/validation-report.md`:** (1) the expiry-leg join
-now requires `subscription_id` AND `principal_hash` (previously `subscription_id` alone,
-inconsistent with the KQL version above); (2) every `join type=inner` now sets `max=0`, since
-Splunk's `join` command defaults to `max=1` and would otherwise silently keep only the first
-matching authorization_change/open event per notification; (3) the close-suppression joins now
-require `subscription_id` AND `principal_hash` (previously `subscription_id` alone), for the
-same reason as the KQL fix above.
+**SPL-specific approximation, honestly flagged**: SPL has no built-in set-intersection over two
+multivalue fields, so the scope-downgrade relevance check above compares each side's first scope
+tag — correct for this project's single-tag fixtures, an approximation for genuinely multi-tag
+scopes. The JS oracle (`tests/attack/track3util.js`) implements the precise any-element
+intersection and remains the authority for that case.
 
 **Note on the ASCII-quote `strptime()` format string above:** it assumes ISO-8601 with
 millisecond precision (`2026-09-05T10:10:00.000Z`). This has not been executed against a live
@@ -198,8 +366,9 @@ Splunk instance in this project (no Splunk instance was available during develop
 `detections/README.md`, "validation tooling used") — validate it against your own ingested
 field format before relying on it.
 
-A separate, clearly-labeled `detected_at`-only informational search (never merged into the
-above) is in the full file: `detections/spl/mcp_subscription_authorization_drift.spl`.
+A separate, clearly-labeled `detected_at`-only informational note (never promoted into the query
+above at all) is in the full file's closing comment block:
+`detections/spl/mcp_subscription_authorization_drift.spl`.
 
 ## Query — Sigma: BEST-EFFORT CORRELATION / HUNTING CONTENT ONLY — NOT SEMANTICALLY EQUIVALENT TO KQL/SPL
 
@@ -230,67 +399,85 @@ and `detections/README.md`, "Sigma limitations for Track 3," for the complete an
 
 ## False positives
 
-- **Grace periods** (confirmed, `data/validation/track3/v5_grace_period_policy.jsonl`, scenario
-  V5-02): a notification within a deployment-defined grace window after a scope downgrade fires
-  mechanically, because no grace-period field exists in the schema.
 - **Permanent policy exemptions** (confirmed, scenario V5-09): a documented, deployment-specific
   decision to allow certain already-open streams to continue indefinitely after revocation is
-  likewise invisible to the schema and fires mechanically.
+  invisible to the schema and fires mechanically as `ConfirmedDrift`.
 - Clock skew between the authorization server and the MCP server can produce a **false
   negative** (a real violation hidden because the reported `effective_at` looks later than it
   truly was) — see `docs/false-positive-analysis.md`.
 - Inaccurate `effective_at` reported by the authorization server — the rule trusts the value it
   is given.
+- **RECLASSIFIED (scope-aware correction): grace periods no longer fire mechanically as an
+  accepted false positive.** A notification within a deployment-defined grace window after a
+  scope downgrade (scenario V5-02, a legacy-shaped fixture with no `required_scope`/
+  `removed_scope` evidence) now correctly reports `InsufficientEvidence`, not `ConfirmedDrift` —
+  the honest answer when relevance cannot be determined, rather than a confirmed-but-forgiven
+  violation. A deployment emitting both scope fields gets a definitive `EvaluatedNoViolation`
+  when the downgrade genuinely doesn't affect a given subscription's required scope (see
+  fixture V12-03); no grace-period field is still needed for that specific case, though one
+  would still be needed for a *relevant* downgrade a deployment wants to tolerate temporarily.
 
 ## Limitations
 
-- No grace-period or permanent-exemption field exists in the locked telemetry contract — see
-  "Deployment prerequisite" above. Tuning recommendation: apply a deployment-side constant
-  (`WHERE notif_time > boundary + grace_period`) or allowlist downstream of this query, rather
-  than expecting the base query to know about product policy.
 - Depends on a push-based revocation feed for the `effective_at` path, which most real OAuth
   deployments do not have — the `valid_until`/silent-expiry leg exists specifically so detection
   does not depend on one existing at all.
-- **[Scope boundary, confirmed, not resolved]** The revocation-leg join is by `principal.id_hash`
-  only (not also `mcp.subscription.id`) — intentional, so that a notification event missing
-  `mcp.subscription.id` (malformed telemetry) still correlates — but this means a principal
-  holding two or more concurrent subscriptions, one revoked and one still legitimately valid,
-  could have the still-valid subscription's notifications cross-correlated against the other's
-  revocation boundary. This is a genuine, unresolved precision/recall tradeoff, now empirically
-  demonstrated by fixture V11-11 (`data/validation/track3/v11_same_principal_cross_subscription_risk.jsonl`)
-  and documented in `docs/validation-report.md`, "remaining risks" / "Track 3 remediation pass" —
-  not resolved in this release, and not fixable without a subscription-id field on
-  `authorization_change` events that does not exist in the locked telemetry contract.
-- **[Code defect, FIXED]** The close-suppression join and the SPL expiry-leg join previously keyed
-  on `subscription_id` alone in one or both languages, which could let one principal's close
-  event suppress a different principal's genuine violation (or miscorrelate expiry across
-  principals) whenever `mcp.subscription.id` values collided. Both now require
-  `subscription_id` AND `principal_hash`. See `docs/validation-report.md`, "Track 3 remediation
-  pass," fixture V11-02.
-- **[Code defect, FIXED]** SPL's `join type=inner` subsearches previously relied on Splunk's
-  `max=1` default and could silently drop additional applicable authorization_change/open
-  events. All such joins now set `max=0`. See fixture V11-01.
-- `detected_at`-only timing is never promoted to this rule's high-confidence result set by
-  design — see the separate informational query.
+- **[Code defect, FIXED — scope-aware correction] Revocation scope is now resolved to a specific
+  authorization binding, not a principal.** The previous release's revocation-leg join was by
+  `principal.id_hash` only, so a principal holding two or more concurrent subscriptions could
+  have a still-valid subscription's notifications cross-correlated against a different one's
+  revocation — empirically demonstrated by fixture V11-11 (retained, unmodified, as a legacy
+  worked example). Verified against current MCP/OAuth documentation: a principal can hold
+  multiple independent, independently-revocable bindings; "same principal" is not "same
+  authorization scope." Fixed via `mcp.authz.binding_id` and
+  `mcp.authz.change.affected_scope`/`affected_binding_ids` — no subscription-id field on
+  `authorization_change` was needed, so the malformed-telemetry case fixture V6-02 covers is
+  unaffected. See fixture V12-13 and `docs/validation-report.md`, "Track 3 remediation pass,
+  part 2."
+- **[Deployment prerequisite, new] The scope-aware correction only helps deployments that emit
+  the new fields.** Legacy telemetry lacking `mcp.authz.binding_id`/`affected_scope` still gets
+  the safe default (`InsufficientEvidence` on genuine ambiguity) rather than a fully resolved
+  answer — see the "Track 3 coverage report" in `docs/validation-report.md`.
+- **[Scope boundary, partial] A `scope_downgraded` change's relevance to a given subscription
+  requires BOTH `mcp.subscription.required_scope` and `mcp.authz.change.removed_scope`.** Either
+  missing reports `InsufficientEvidence` (fixtures V5-02, V12-09), never a guessed default.
+- **[Validation gap] KQL/SPL approximate binding-candidate timing** as "ever observed for this
+  principal," not precisely interval-bounded, in the sole-candidate fallback and
+  `all_principal_bindings` broadening. The JS reference oracle
+  (`tests/attack/track3util.js`) remains precise; this is a documented KQL/SPL-only
+  simplification, analogous to the pre-existing Sigma limitations for this track.
+- **[Code defects, FIXED — prior remediation pass]** The close-suppression join and the SPL
+  expiry-leg join previously keyed on `subscription_id` alone in one or both languages; SPL's
+  `join type=inner` subsearches previously relied on Splunk's `max=1` default. Both fixed; see
+  `docs/validation-report.md`, "Track 3 remediation pass" (part 1), fixtures V11-01/V11-02.
+- `detected_at`-only timing is never promoted to a scored outcome of any kind — see the separate
+  informational query and "Track 3 coverage report."
 
 ## Investigation fields
 
-`mcp.subscription.id`, `principal.id_hash`, `mcp.subscription.notification_type`,
-`mcp.authz.change.type`/`source`, the resolved boundary type/time, `trace_id` (if present).
+`instance_id`, `subscription_id`, `principal_hash`, `notification_type`, `BindingId`,
+`AuthzChangeType`/`AuthzChangeSource`, the resolved `Boundary` type/time, `Reason` (populated for
+`InsufficientEvidence` — one of `ambiguous_scope`, `missing_scope_evidence`,
+`conflicting_evidence`, `incompatible_hash_epoch`, `no_invalidity_evidence`, `timing_unconfirmed`),
+`trace_id` (if present).
 
 ## References
 
 - MCP specification `2026-07-28`, subscriptions pattern: https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions
 - MCP specification `2026-07-28`, authorization: https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
 - MCP specification `2026-07-28`, authorization security considerations: https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations
+- OAuth 2.0 Token Revocation, RFC 7009 (per-token vs. per-grant revocation scope): https://www.rfc-editor.org/rfc/rfc7009
+- OAuth 2.0 Authorization Framework, RFC 6749 §6 (refresh tokens issue new values for the same grant): https://www.rfc-editor.org/rfc/rfc6749#section-6
 - Sigma correlation rules specification (for the documented Sigma limitation): https://github.com/SigmaHQ/sigma-specification/blob/main/specification/sigma-correlation-rules-specification.md
 
 ## Severity recommendation
 
-**High** for the KQL/SPL authoritative queries, when the boundary is authoritative
-`effective_at` or a computable `valid_until`. **Never high confidence** for `detected_at`-only
-timing — that remains a separate, low-confidence/informational query. The Sigma correlation, to
-the extent it fires at all, should be treated as hunting content, not an equivalent alert.
+**High** for `ConfirmedDrift` (authoritative `effective_at` or a computable `valid_until`).
+**Medium** for `InsufficientEvidence` — worth a human look (ambiguous scope, missing scope
+evidence, a hash-epoch or conflicting-evidence anomaly), never an automatic page. **None** for
+`EvaluatedNoViolation`. `detected_at`-only timing is never promoted to any scored outcome — that
+remains a separate, low-confidence/informational query. The Sigma correlation, to the extent it
+fires at all, should be treated as hunting content, not an equivalent alert.
 
 ## MITRE ATT&CK
 

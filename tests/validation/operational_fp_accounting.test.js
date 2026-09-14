@@ -43,17 +43,30 @@ test('Operational false-positive accounting table (mechanically computed)', () =
 
   const ids = flaggedAndFiring.map((x) => x.row.scenario_id).sort();
   // Pinned set, re-derived mechanically each run rather than hand-maintained:
-  // V1-08 (collector canonicalization artifact), V5-02 (grace-period policy),
-  // V5-09 (permanent exemption policy) are TRUE operational false positives: the rule fires
-  // on an event that is entirely benign once the violated prerequisite is accounted for.
+  // V1-08 (collector canonicalization artifact) and V5-09 (permanent exemption policy) are TRUE
+  // operational false positives: the rule fires on an event that is entirely benign once the
+  // violated prerequisite is accounted for.
+  // V5-02 (scope-downgrade grace period) is EXCLUDED from this bucket as of the scope-aware
+  // Track 3 correction: it no longer mechanically fires at all -- it now correctly reports
+  // insufficient_evidence (no required_scope/removed_scope evidence exists to establish
+  // relevance), so it is filtered out by `flaggedAndFiring` above before this assertion ever
+  // sees it. It remains `false_positive_test: true` in the manifest (still a fixture
+  // specifically probing this shape) but is no longer counted as an operational false positive.
   // V3-02 is EXCLUDED from that bucket on purpose: it fires because it contains a genuine
   // historical Track 2 violation event (denied under policy-v1) alongside a later benign
   // allow (policy-v2) in the SAME file -- the fire is correct given a REAL violation, not an
   // artifact of a violated prerequisite. See the per-event assertion in metrics.test.js.
-  assert.deepEqual(ids, ['V1-08', 'V3-02', 'V5-02', 'V5-09'].sort(), 'the set of false_positive_test-flagged scenarios that mechanically fire must be exactly these four');
+  assert.deepEqual(ids, ['V1-08', 'V3-02', 'V5-09'].sort(), 'the set of false_positive_test-flagged scenarios that mechanically fire must be exactly these three, post-correction');
 
   const trueOperationalFPs = ids.filter((id) => id !== 'V3-02');
-  assert.deepEqual(trueOperationalFPs.sort(), ['V1-08', 'V5-02', 'V5-09'].sort(), 'true operational false positives (benign trigger, not a real violation)');
+  assert.deepEqual(trueOperationalFPs.sort(), ['V1-08', 'V5-09'].sort(), 'true operational false positives (benign trigger, not a real violation)');
+});
+
+test('V5-02 is no longer an operational false positive: the scope-aware correction reports it as insufficient_evidence, not a mechanical fire', () => {
+  const rows = loadValidationCorpus();
+  const v502 = rows.find((r) => r.scenario_id === 'V5-02');
+  assert.equal(v502.false_positive_test, true, 'still flagged as probing a false-positive-prone shape');
+  assert.equal(classify(v502).firesAny, false, 'but it no longer mechanically fires, post-correction');
 });
 
 test('V3-02 is correctly excluded from the operational-FP bucket: its fire is a genuine historical violation, not a benign artifact', () => {

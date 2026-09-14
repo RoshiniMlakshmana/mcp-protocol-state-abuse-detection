@@ -63,183 +63,212 @@ test('Track 2: Sigma, KQL, SPL agree on every one of the 68 stress-corpus scenar
   assert.equal(disagreements, 0);
 });
 
-// --- Track 3: two INDEPENDENTLY-CODED JS models, one per language's written semantics, run
-// against the shared corpus and compared row-for-row where a row-shaped result exists.
+// --- Track 3: two INDEPENDENTLY-CODED JS models of the SCOPE-AWARE CORRECTED algorithm, one
+// per language's written query, run against the shared corpus and compared by outcome.
 //
 // IMPORTANT DISCLAIMER: these are hand-written JS models of what each query LANGUAGE's
 // documented semantics do with the given events -- neither model executes actual KQL or SPL,
 // and neither runs against a real Sentinel or Splunk backend (see README.md and
 // docs/validation-report.md; native execution remains pending). "Equivalence" below means
-// "these two independently-authored models, each coded from that language's own semantics,
-// agree" -- not "verified against native query engines."
-//
-// kqlModelRows(): models detections/kql/mcp_subscription_authorization_drift.kql. KQL's `join
-// kind=inner` preserves every matching row combination from the whole table with no implicit
-// row limit, so this iterates every (notification, change) and (notification, open) pair.
-function kqlModelRows(events) {
-  const notifications = events.filter((e) => e['event.name'] === 'mcp.subscription.notification');
-  const opens = events.filter((e) => e['event.name'] === 'mcp.subscription.open');
-  const closes = events.filter((e) => e['event.name'] === 'mcp.subscription.close');
-  const changes = events.filter((e) =>
-    e['event.name'] === 'mcp.subscription.authorization_change' &&
-    e['mcp.authz.change.timing_confidence'] === 'authoritative' &&
-    e['mcp.authz.change.effective_at'] &&
-    ['revoked', 'expired', 'scope_downgraded'].includes(e['mcp.authz.change.type'])
-  );
-  const closedBefore = (n) => closes.some((c) =>
-    c['mcp.subscription.id'] === n['mcp.subscription.id'] &&
-    c['principal.id_hash'] === n['principal.id_hash'] &&
-    c.timestamp <= n.timestamp
-  );
-  const rows = [];
-  for (const n of notifications) {
-    for (const c of changes) {
-      if (c['principal.id_hash'] === n['principal.id_hash'] && n.timestamp > c['mcp.authz.change.effective_at'] && !closedBefore(n)) {
-        rows.push({ subscription_id: n['mcp.subscription.id'], principal_hash: n['principal.id_hash'], notif_time: n.timestamp, boundary: 'effective_at' });
-      }
-    }
-    for (const o of opens) {
-      const validUntil = o['mcp.authz.valid_until'] || o['mcp.authz.grant_expiry'];
-      if (validUntil && o['mcp.subscription.id'] === n['mcp.subscription.id'] && o['principal.id_hash'] === n['principal.id_hash'] &&
-          n.timestamp > validUntil && !closedBefore(n)) {
-        rows.push({ subscription_id: n['mcp.subscription.id'], principal_hash: n['principal.id_hash'], notif_time: n.timestamp, boundary: 'valid_until' });
-      }
-    }
-  }
-  return rows;
+// "these two independently-authored models, each coded from that language's own written query,
+// agree" -- not "verified against native query engines." Both include the SAME documented
+// simplification as the real KQL/SPL files: binding-candidate membership is approximated as
+// "ever observed for this principal", not precisely interval-bounded (see
+// telemetry/correlation.md and the KQL file's header comment for the full rationale).
+function legacyBindingId(principalHash, subId) {
+  return `legacy:${principalHash}:${subId === undefined ? '(none)' : subId}`;
 }
+function resolveInstanceId(e) {
+  if (e['mcp.subscription.instance_id'] !== undefined) return e['mcp.subscription.instance_id'];
+  return `${e['principal.id_hash']}:${e['mcp.subscription.id']}`;
+}
+const INVALIDATING = ['revoked', 'expired', 'scope_downgraded'];
 
-// splModelCorrectedRows(): models the CORRECTED detections/spl/mcp_subscription_authorization_drift.spl
-// (subscription_id+principal_hash expiry join, max=0 on inner joins, principal_hash-scoped close
-// suppression). Written from scratch against the SPL file's own semantics, independently of
-// kqlModelRows above (no shared helper), so agreement between the two is a genuine check, not a
-// restatement of one function.
-function splModelCorrectedRows(events) {
-  const notifications = events.filter((e) => e['event.name'] === 'mcp.subscription.notification');
-  const opens = events.filter((e) => e['event.name'] === 'mcp.subscription.open');
-  const closes = events.filter((e) => e['event.name'] === 'mcp.subscription.close');
-  const changes = events.filter((e) =>
-    e['event.name'] === 'mcp.subscription.authorization_change' &&
-    e['mcp.authz.change.timing_confidence'] === 'authoritative' &&
-    e['mcp.authz.change.effective_at'] &&
-    ['revoked', 'expired', 'scope_downgraded'].includes(e['mcp.authz.change.type'])
-  );
-  // `stats min(close_time) as earliest_close_time by subscription_id, principal_hash`
+// kqlModelResults(): models detections/kql/mcp_subscription_authorization_drift.kql's
+// AllSignals/priority-max structure.
+function kqlModelResults(events) {
+  const opens = events.filter((e) => e['event.name'] === 'mcp.subscription.open').map((e) => ({
+    instanceId: resolveInstanceId(e), principalHash: e['principal.id_hash'],
+    bindingId: e['mcp.authz.binding_id'] !== undefined ? e['mcp.authz.binding_id'] : legacyBindingId(e['principal.id_hash'], e['mcp.subscription.id']),
+    requiredScope: e['mcp.subscription.required_scope'], validUntil: e['mcp.authz.valid_until'] || e['mcp.authz.grant_expiry'], keyId: e['security.hash.key_id'],
+  }));
+  const notifs = events.filter((e) => e['event.name'] === 'mcp.subscription.notification').map((e) => ({
+    instanceId: resolveInstanceId(e), subscriptionId: e['mcp.subscription.id'], principalHash: e['principal.id_hash'], notifTime: e.timestamp,
+    ownBindingId: e['mcp.authz.binding_id'], ownValidUntil: e['mcp.authz.valid_until'], keyId: e['security.hash.key_id'],
+  }));
+  const closes = events.filter((e) => e['event.name'] === 'mcp.subscription.close').map((e) => ({
+    instanceId: resolveInstanceId(e), principalHash: e['principal.id_hash'], closeTime: e.timestamp,
+  }));
+  const changes = events.filter((e) => e['event.name'] === 'mcp.subscription.authorization_change' && e['mcp.authz.change.timing_confidence'] === 'authoritative' && INVALIDATING.includes(e['mcp.authz.change.type'])).map((e) => ({
+    principalHash: e['principal.id_hash'], type: e['mcp.authz.change.type'], effectiveAt: e['mcp.authz.change.effective_at'],
+    affectedScope: e['mcp.authz.change.affected_scope'] || 'unknown', affectedBindingIds: e['mcp.authz.change.affected_binding_ids'] || [], removedScope: e['mcp.authz.change.removed_scope'],
+  }));
   const earliestClose = new Map();
-  for (const c of closes) {
-    const key = `${c['mcp.subscription.id']} ${c['principal.id_hash']}`;
-    const prev = earliestClose.get(key);
-    if (prev === undefined || c.timestamp < prev) earliestClose.set(key, c.timestamp);
-  }
-  const survivesCloseJoin = (n) => {
-    const t = earliestClose.get(`${n['mcp.subscription.id']} ${n['principal.id_hash']}`);
-    return t === undefined || t > n.timestamp;
-  };
-  const rows = [];
-  // Leg A: `join type=inner max=0 principal_hash [...]`
-  for (const n of notifications) {
-    for (const c of changes) {
-      if (c['principal.id_hash'] === n['principal.id_hash'] && n.timestamp > c['mcp.authz.change.effective_at'] && survivesCloseJoin(n)) {
-        rows.push({ subscription_id: n['mcp.subscription.id'], principal_hash: n['principal.id_hash'], notif_time: n.timestamp, boundary: 'effective_at' });
+  for (const c of closes) { const k = `${c.instanceId}|${c.principalHash}`; if (!earliestClose.has(k) || c.closeTime < earliestClose.get(k)) earliestClose.set(k, c.closeTime); }
+  const known = new Map();
+  for (const o of opens) { if (!known.has(o.principalHash)) known.set(o.principalHash, new Set()); known.get(o.principalHash).add(o.bindingId); }
+  for (const n of notifs) { if (n.ownBindingId) { if (!known.has(n.principalHash)) known.set(n.principalHash, new Set()); known.get(n.principalHash).add(n.ownBindingId); } }
+
+  const results = [];
+  for (const n of notifs) {
+    const open = opens.find((o) => o.instanceId === n.instanceId);
+    const bindingId = n.ownBindingId !== undefined ? n.ownBindingId : (open ? open.bindingId : undefined);
+    const validUntil = (n.ownBindingId !== undefined && n.ownValidUntil !== undefined) ? n.ownValidUntil : (open ? open.validUntil : undefined);
+    const epochMismatch = !!(open && n.keyId && open.keyId && n.keyId !== open.keyId);
+    const closeKey = `${n.instanceId}|${n.principalHash}`;
+    const suppressed = earliestClose.has(closeKey) && earliestClose.get(closeKey) <= n.notifTime;
+    let best = { outcome: 'InsufficientEvidence', priority: 0 };
+    if (!epochMismatch && validUntil) {
+      const crossed = n.notifTime > validUntil;
+      const o = crossed && !suppressed ? { outcome: 'ConfirmedDrift', priority: 3, boundary: 'valid_until' } : { outcome: 'EvaluatedNoViolation', priority: 1 };
+      if (o.priority >= best.priority) best = o;
+    }
+    if (epochMismatch) best = { outcome: 'InsufficientEvidence', priority: 2 };
+    if (!epochMismatch) {
+      for (const c of changes.filter((c) => c.principalHash === n.principalHash)) {
+        const candidates = known.get(n.principalHash) || new Set();
+        let applies;
+        if (c.affectedScope === 'all_principal_bindings') applies = 'yes';
+        else if (c.affectedScope === 'binding') applies = c.affectedBindingIds.includes(bindingId) ? 'yes' : 'no';
+        else if (candidates.size === 1) applies = (bindingId === undefined || candidates.has(bindingId)) ? 'yes' : 'no';
+        else if (candidates.size > 1) applies = 'ambiguous';
+        else applies = 'no';
+        if (applies === 'no') continue;
+        if (applies === 'ambiguous') { if (2 >= best.priority) best = { outcome: 'InsufficientEvidence', priority: 2 }; continue; }
+        if (c.type === 'scope_downgraded') {
+          if (!open || !open.requiredScope || !c.removedScope) { if (2 >= best.priority) best = { outcome: 'InsufficientEvidence', priority: 2 }; continue; }
+          if (!c.removedScope.some((s) => open.requiredScope.includes(s))) { if (1 >= best.priority) best = { outcome: 'EvaluatedNoViolation', priority: 1 }; continue; }
+        }
+        const crossed = n.notifTime > c.effectiveAt;
+        const o = crossed && !suppressed ? { outcome: 'ConfirmedDrift', priority: 3, boundary: 'effective_at' } : { outcome: 'EvaluatedNoViolation', priority: 1 };
+        if (o.priority >= best.priority) best = o;
       }
     }
+    results.push({ instanceId: n.instanceId, notifTime: n.notifTime, outcome: best.outcome });
   }
-  // Leg B: `join type=inner max=0 subscription_id principal_hash [...]`
-  for (const n of notifications) {
-    for (const o of opens) {
-      const validUntil = o['mcp.authz.valid_until'] || o['mcp.authz.grant_expiry'];
-      if (validUntil && o['mcp.subscription.id'] === n['mcp.subscription.id'] && o['principal.id_hash'] === n['principal.id_hash'] &&
-          n.timestamp > validUntil && survivesCloseJoin(n)) {
-        rows.push({ subscription_id: n['mcp.subscription.id'], principal_hash: n['principal.id_hash'], notif_time: n.timestamp, boundary: 'valid_until' });
-      }
-    }
-  }
-  return rows;
+  return results;
 }
 
-// splModelPreFixBuggyRows(): models the ORIGINAL, PRE-FIX SPL (expiry leg joined on
-// subscription_id ALONE, and Splunk's join defaulting to max=1 -- first match only). Kept only
-// to prove the regression tests actually catch a reintroduction of either bug; never used as a
-// correctness reference.
-function splModelPreFixBuggyRows(events) {
-  const notifications = events.filter((e) => e['event.name'] === 'mcp.subscription.notification');
-  const opens = events.filter((e) => e['event.name'] === 'mcp.subscription.open');
+// splModelResults(): an INDEPENDENTLY-WRITTEN model of detections/spl/...spl -- built as a
+// sequence of per-notification field computations (mirroring SPL's eval-per-row style) rather
+// than kqlModelResults' per-notification nested-loop style, and computed with its own separate
+// data structures throughout, so agreement between the two is a genuine cross-check.
+function splModelResults(events) {
+  const opens = {}, requiredScopeOf = {}, validUntilOf = {}, keyIdOf = {};
+  for (const e of events) {
+    if (e['event.name'] !== 'mcp.subscription.open') continue;
+    const iid = resolveInstanceId(e);
+    opens[iid] = { principalHash: e['principal.id_hash'], bindingId: e['mcp.authz.binding_id'] !== undefined ? e['mcp.authz.binding_id'] : legacyBindingId(e['principal.id_hash'], e['mcp.subscription.id']) };
+    requiredScopeOf[iid] = e['mcp.subscription.required_scope'];
+    validUntilOf[iid] = e['mcp.authz.valid_until'] || e['mcp.authz.grant_expiry'];
+    keyIdOf[iid] = e['security.hash.key_id'];
+  }
+  const closesByKey = {};
+  for (const e of events) {
+    if (e['event.name'] !== 'mcp.subscription.close') continue;
+    const key = `${resolveInstanceId(e)}|${e['principal.id_hash']}`;
+    if (closesByKey[key] === undefined || e.timestamp < closesByKey[key]) closesByKey[key] = e.timestamp;
+  }
+  const changeRows = events.filter((e) => e['event.name'] === 'mcp.subscription.authorization_change' && e['mcp.authz.change.timing_confidence'] === 'authoritative' && INVALIDATING.includes(e['mcp.authz.change.type']));
+  const knownBindingsOf = {};
+  for (const iid in opens) { const p = opens[iid].principalHash; (knownBindingsOf[p] = knownBindingsOf[p] || []).push(opens[iid].bindingId); }
+  for (const e of events) {
+    if (e['event.name'] !== 'mcp.subscription.notification' || e['mcp.authz.binding_id'] === undefined) continue;
+    (knownBindingsOf[e['principal.id_hash']] = knownBindingsOf[e['principal.id_hash']] || []).push(e['mcp.authz.binding_id']);
+  }
+
+  const out = [];
+  for (const e of events) {
+    if (e['event.name'] !== 'mcp.subscription.notification') continue;
+    const iid = resolveInstanceId(e);
+    const open = opens[iid];
+    const bindingId = e['mcp.authz.binding_id'] !== undefined ? e['mcp.authz.binding_id'] : (open ? open.bindingId : undefined);
+    const validUntil = (e['mcp.authz.binding_id'] !== undefined && e['mcp.authz.valid_until'] !== undefined) ? e['mcp.authz.valid_until'] : validUntilOf[iid];
+    const epochMismatch = !!(keyIdOf[iid] && e['security.hash.key_id'] && keyIdOf[iid] !== e['security.hash.key_id']);
+    const suppressed = closesByKey[`${iid}|${e['principal.id_hash']}`] !== undefined && closesByKey[`${iid}|${e['principal.id_hash']}`] <= e.timestamp;
+
+    const priorities = [];
+    if (epochMismatch) priorities.push([2, 'InsufficientEvidence']);
+    else {
+      if (validUntil !== undefined) {
+        priorities.push(e.timestamp > validUntil && !suppressed ? [3, 'ConfirmedDrift'] : [1, 'EvaluatedNoViolation']);
+      }
+      const candidates = Array.from(new Set(knownBindingsOf[e['principal.id_hash']] || []));
+      for (const c of changeRows) {
+        if (c['principal.id_hash'] !== e['principal.id_hash']) continue;
+        const affectedScope = c['mcp.authz.change.affected_scope'] || 'unknown';
+        const affectedIds = c['mcp.authz.change.affected_binding_ids'] || [];
+        let applies;
+        if (affectedScope === 'all_principal_bindings') applies = 'yes';
+        else if (affectedScope === 'binding') applies = affectedIds.indexOf(bindingId) >= 0 ? 'yes' : 'no';
+        else if (candidates.length === 1) applies = (bindingId === undefined || candidates[0] === bindingId) ? 'yes' : 'no';
+        else if (candidates.length > 1) applies = 'ambiguous';
+        else applies = 'no';
+        if (applies === 'no') continue;
+        if (applies === 'ambiguous') { priorities.push([2, 'InsufficientEvidence']); continue; }
+        if (c['mcp.authz.change.type'] === 'scope_downgraded') {
+          const req = requiredScopeOf[iid], rem = c['mcp.authz.change.removed_scope'];
+          if (!req || !rem) { priorities.push([2, 'InsufficientEvidence']); continue; }
+          if (rem.filter((s) => req.indexOf(s) >= 0).length === 0) { priorities.push([1, 'EvaluatedNoViolation']); continue; }
+        }
+        priorities.push(e.timestamp > c['mcp.authz.change.effective_at'] && !suppressed ? [3, 'ConfirmedDrift'] : [1, 'EvaluatedNoViolation']);
+      }
+    }
+    priorities.push([0, 'InsufficientEvidence']);
+    priorities.sort((a, b) => b[0] - a[0]);
+    out.push({ instanceId: iid, notifTime: e.timestamp, outcome: priorities[0][1] });
+  }
+  return out;
+}
+
+// preCorrectionModelResults(): the PRE-CORRECTION model (principal-only join, no binding/scope
+// awareness at all) -- kept only to prove the new regression corpus catches a reintroduction of
+// the exact defect this pass fixes.
+function preCorrectionModelResults(events) {
+  const notifs = events.filter((e) => e['event.name'] === 'mcp.subscription.notification');
+  const changes = events.filter((e) => e['event.name'] === 'mcp.subscription.authorization_change' && e['mcp.authz.change.timing_confidence'] === 'authoritative' && INVALIDATING.includes(e['mcp.authz.change.type']));
   const closes = events.filter((e) => e['event.name'] === 'mcp.subscription.close');
-  const changes = events.filter((e) =>
-    e['event.name'] === 'mcp.subscription.authorization_change' &&
-    e['mcp.authz.change.timing_confidence'] === 'authoritative' &&
-    e['mcp.authz.change.effective_at'] &&
-    ['revoked', 'expired', 'scope_downgraded'].includes(e['mcp.authz.change.type'])
-  );
-  const earliestCloseBySubOnly = new Map();
-  for (const c of closes) {
-    const key = c['mcp.subscription.id'];
-    const prev = earliestCloseBySubOnly.get(key);
-    if (prev === undefined || c.timestamp < prev) earliestCloseBySubOnly.set(key, c.timestamp);
-  }
-  const survivesCloseJoin = (n) => {
-    const t = earliestCloseBySubOnly.get(n['mcp.subscription.id']);
-    return t === undefined || t > n.timestamp;
-  };
-  const rows = [];
-  // Leg A unaffected by either historical bug.
-  for (const n of notifications) {
-    for (const c of changes) {
-      if (c['principal.id_hash'] === n['principal.id_hash'] && n.timestamp > c['mcp.authz.change.effective_at'] && survivesCloseJoin(n)) {
-        rows.push({ subscription_id: n['mcp.subscription.id'], principal_hash: n['principal.id_hash'], notif_time: n.timestamp, boundary: 'effective_at' });
-      }
-    }
-  }
-  // Leg B: `join type=inner subscription_id [...]` (max=1 default, subscription_id-only key) --
-  // pick only the FIRST matching open event per notification, joined by subscription_id alone.
-  for (const n of notifications) {
-    const firstMatch = opens.find((o) => {
-      const validUntil = o['mcp.authz.valid_until'] || o['mcp.authz.grant_expiry'];
-      return validUntil && o['mcp.subscription.id'] === n['mcp.subscription.id'];
-    });
-    if (!firstMatch) continue;
-    const validUntil = firstMatch['mcp.authz.valid_until'] || firstMatch['mcp.authz.grant_expiry'];
-    if (n.timestamp > validUntil && survivesCloseJoin(n)) {
-      rows.push({ subscription_id: n['mcp.subscription.id'], principal_hash: n['principal.id_hash'], notif_time: n.timestamp, boundary: 'valid_until' });
-    }
-  }
-  return rows;
+  return notifs.map((n) => {
+    const fires = changes.some((c) => c['principal.id_hash'] === n['principal.id_hash'] && n.timestamp > c['mcp.authz.change.effective_at'] &&
+      !closes.some((cl) => cl['principal.id_hash'] === n['principal.id_hash'] && cl.timestamp <= n.timestamp));
+    return { instanceId: resolveInstanceId(n), notifTime: n.timestamp, outcome: fires ? 'ConfirmedDrift' : 'InsufficientEvidence' };
+  });
 }
 
-function sortRows(rows) {
-  return [...rows].sort((a, b) => (a.notif_time < b.notif_time ? -1 : a.notif_time > b.notif_time ? 1 : (a.boundary < b.boundary ? -1 : a.boundary > b.boundary ? 1 : (a.subscription_id || '').localeCompare(b.subscription_id || ''))));
+function byInstance(results) {
+  return new Map(results.map((r) => [`${r.instanceId}|${r.notifTime}`, r.outcome]));
 }
 
-test('Track 3: independently-coded KQL-semantics and corrected-SPL-semantics models agree on every alert row across the full stress corpus', () => {
+test('Track 3: independently-coded KQL-model and SPL-model outcomes agree on every notification across the full stress corpus', () => {
   const rows = loadFullStressCorpus();
   let disagreements = 0;
   for (const row of rows) {
-    const kql = sortRows(kqlModelRows(row.events));
-    const spl = sortRows(splModelCorrectedRows(row.events));
-    try {
-      assert.deepEqual(kql, spl);
-    } catch {
-      disagreements++;
-      console.log(`ROW DISAGREEMENT on ${row.scenario_id}: kql=${JSON.stringify(kql)} spl=${JSON.stringify(spl)}`);
+    const kql = byInstance(kqlModelResults(row.events));
+    const spl = byInstance(splModelResults(row.events));
+    for (const [key, outcome] of kql) {
+      if (spl.get(key) !== outcome) { disagreements++; console.log(`OUTCOME DISAGREEMENT on ${row.scenario_id} ${key}: kql=${outcome} spl=${spl.get(key)}`); }
     }
   }
   assert.equal(disagreements, 0);
 });
 
-test('Track 3: the corrected-SPL model diverges from the pre-fix buggy-SPL model wherever the fixed bugs actually matter, proving the regression corpus exercises them', () => {
+test('Track 3: the scope-aware corrected model diverges from the pre-correction (principal-only) model wherever the correction actually matters', () => {
   const rows = loadFullStressCorpus();
   let anyDivergence = false;
   const divergentScenarios = [];
   for (const row of rows) {
-    const corrected = sortRows(splModelCorrectedRows(row.events));
-    const buggy = sortRows(splModelPreFixBuggyRows(row.events));
-    if (JSON.stringify(corrected) !== JSON.stringify(buggy)) {
-      anyDivergence = true;
-      divergentScenarios.push(row.scenario_id);
+    const corrected = byInstance(kqlModelResults(row.events));
+    const pre = byInstance(preCorrectionModelResults(row.events));
+    let diverged = false;
+    for (const [key, outcome] of corrected) {
+      const preOutcome = pre.get(key);
+      if (preOutcome !== undefined && (outcome === 'ConfirmedDrift') !== (preOutcome === 'ConfirmedDrift')) diverged = true;
     }
+    if (diverged) { anyDivergence = true; divergentScenarios.push(row.scenario_id); }
   }
-  console.log('\nScenarios where fixing the SPL join-key/max=0 bugs changes the result:', divergentScenarios);
-  assert.ok(anyDivergence, 'expected at least one regression fixture to distinguish corrected SPL from the pre-fix buggy SPL model');
+  console.log('\nScenarios where the scope-aware correction changes the fired/not-fired result:', divergentScenarios);
+  assert.ok(anyDivergence, 'expected at least one regression fixture to distinguish the corrected model from the pre-correction principal-only model');
+  assert.ok(divergentScenarios.includes('V11-11') || divergentScenarios.includes('V12-01'), 'the known scope-ambiguity fixtures must be among the ones that changed');
 });
 
 test('Track 3: Sigma correlation DISAGREES with KQL/SPL on exactly the documented scenarios (A13, A14) and nowhere else in the core corpus', () => {

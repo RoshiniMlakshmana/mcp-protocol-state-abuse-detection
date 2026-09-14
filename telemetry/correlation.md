@@ -95,46 +95,129 @@ the mere absence of `mcp.task.authz_context_id_hash`.
 
 ---
 
-## Track 3 — "Was a notification delivered on a still-open subscription after the authorization state that justified it became invalid?"
+## Track 3 — "Was a notification delivered on a still-open subscription after the authorization binding that justified it became invalid?"
 
 **Scope:** the widest correlation surface in this schema — it must join MCP-internal events to
 an external (authorization-server/policy-engine) signal that has no MCP wire representation at
-all (Block 1 §16).
+all (Block 1 §16), **and must resolve exactly which authorization binding(s) a given external
+change affects before it can be joined to a specific stream at all.**
 
-**Required correlation identifiers:**
-- `mcp.subscription.id` (optionally `mcp.subscription.id_hash`) — ties `mcp.subscription.open`,
-  `.acknowledged`, every `.notification`, and the eventual `.close` together as one stream.
-- `principal.id_hash` — the **only** field that also appears on
-  `mcp.subscription.authorization_change`, since that event is sourced externally and has no
-  `mcp.subscription.id` of its own (a principal's authorization can change independent of any
-  specific subscription). This is the join that bridges MCP-internal telemetry to the external
-  authorization signal.
-- The relevant "authorization became invalid at" timestamp, chosen by **strict preference order
-  (patch addition)**:
-  1. `mcp.authz.change.effective_at`, when present and `mcp.authz.change.source` is
-     `authorization_server_event` or `policy_engine` (i.e., `timing_confidence = authoritative`)
-     — this is the true revocation/change time and should be used whenever available.
-  2. `mcp.authz.valid_until` (or, failing that, the open-time `mcp.authz.grant_expiry`), for the
-     silent-expiry case where no explicit change event exists at all — this is always
-     computable and does not depend on an external push feed.
-  3. `mcp.authz.change.detected_at` alone, only when neither of the above is available
-     (`timing_confidence = detected_only`) — used **with an explicit caveat carried into the
-     finding** that the true change may have happened earlier and an unknown blind window
-     exists between the real change and its observation. A finding built on `detected_at` alone
-     must never be reported as if `detected_at` were the revocation time itself.
-- `mcp.authz.grant_snapshot_hash` — lets a query confirm the notification's subscription was
-  actually opened under the authorization that later changed (guards against comparing against
-  the wrong grant if a principal has multiple overlapping sessions).
+**Scope-aware correction (this revision).** The previous version of this section joined a
+principal's `authorization_change` event to *every* subscription that same principal held,
+implicitly treating "same principal" as "same authorization scope." Verified against current
+MCP/OAuth documentation, that conflation does not hold in general: a principal may hold multiple
+independent, independently-revocable bindings at once (RFC 7009 scopes revocation to "a
+particular token," cascading only by explicit server policy); a scope downgrade removes specific
+permissions, not blanket access (MCP's authorization page requires servers to reason about scope
+per operation); the wire subscription id is connection-scoped, not globally unique (MCP's
+subscriptions pattern: no state survives a reconnect); and a grant fingerprint is not a stable
+identity across a token refresh (RFC 6749 §6). The corrected model below resolves scope
+explicitly, using only evidence present in the telemetry — never a scenario label, never an
+assumption of safety.
 
-**Answering the question:** for each `principal.id_hash` with an
-`mcp.subscription.authorization_change` event (or a computable `mcp.authz.valid_until`/
-`grant_expiry` boundary, even with no explicit event), find every `mcp.subscription.id` opened
-by that same `principal.id_hash` that is still `active` (no `.close` event, or a `.close` event
-with a later timestamp) at the chosen timestamp from the preference order above, then check
-whether any `mcp.subscription.notification` for that `mcp.subscription.id` has a timestamp
-after it. Carry `timing_confidence` (or its absence, for the pure-expiry case) forward into the
-finding so a `detected_only` result is never presented with the same certainty as an
-`authoritative` one. If content sensitivity matters for triage, also read
+### Correlation identifiers
+
+- `mcp.subscription.instance_id` — the authoritative join key for one continuous stream
+  incarnation (ties `.open`, `.acknowledged`, every `.notification`, and the eventual `.close`
+  together). Legacy events lacking it are treated as
+  `instance_id = principal.id_hash + ":" + mcp.subscription.id` (compatibility fallback,
+  principal-scoped so two different principals reusing the identical wire id never collide onto
+  one instance — correct only for a single-server/tenant deployment where the same principal
+  never reopens the identical wire id twice).
+- `mcp.authz.binding_id` — the authorization binding backing an instance, set at `.open` and
+  optionally overridden per-`.notification` (proof of rebinding, see "Validity intervals"
+  below). Legacy `.open` events lacking it are treated as an internal-only pseudo-binding scoped
+  to `(principal.id_hash, mcp.subscription.id)` — see "Sole-candidate fallback" below for the
+  one case this may be used safely.
+- `principal.id_hash` — appears on `.open`, `.notification`, and `.authorization_change`. It is
+  what lets a change event's `affected_scope = all_principal_bindings` be resolved (by scanning
+  every binding *observed* for that principal), and what lets the sole-candidate fallback find
+  candidates at all. It is **not**, by itself, sufficient to scope a `binding`-level change.
+- `mcp.authz.change.affected_scope` / `affected_binding_ids` — states which binding(s) a change
+  affects. `binding` + a populated `affected_binding_ids` is the precise, no-ambiguity case.
+  `all_principal_bindings` is the only case permitted to broaden past named bindings. `unknown`
+  (or the field's absence, for legacy events) triggers the sole-candidate fallback, never a
+  blanket principal-wide assumption.
+- `mcp.subscription.required_scope` / `mcp.authz.change.removed_scope` — for
+  `mcp.authz.change.type = scope_downgraded` specifically: even a change that correctly names an
+  instance's own binding does not invalidate it unless the removed scope intersects the
+  instance's required scope. Either side missing makes relevance unresolved.
+- The relevant "authorization became invalid at" timestamp, chosen by **strict preference
+  order**, unchanged from prior revisions:
+  1. `mcp.authz.change.effective_at`, when present and `timing_confidence = authoritative`.
+  2. `mcp.authz.valid_until` (open-time, or a later `.notification`-level value proving
+     rebinding — see below), or the open-time `mcp.authz.grant_expiry` as a last resort — always
+     computable, no external push feed required.
+  3. `mcp.authz.change.detected_at` alone (`timing_confidence = detected_only`) is **no longer
+     promoted to a scored finding of any confidence** — see "Three-outcome reporting" below.
+- `security.hash.key_id` — must match across every event being compared by hashed field
+  (`principal.id_hash`, and `mcp.authz.binding_id` if a deployment chooses to hash it). A
+  mismatch between an instance's own open-time key epoch and a later event's key epoch makes
+  that comparison unsafe and must be reported as insufficient evidence, not silently skipped or
+  silently trusted.
+
+### Resolving affected bindings (the reference algorithm)
+
+For each `mcp.subscription.authorization_change` event:
+
+1. If `affected_scope = binding`: the affected set is exactly `affected_binding_ids`.
+2. If `affected_scope = all_principal_bindings`: the affected set is every `mcp.authz.binding_id`
+   **observed** (via `.open` or a later proven-rebinding `.notification`) for this
+   `principal.id_hash`, restricted to bindings that were valid at some point at or before
+   `effective_at`. This is the only path allowed to broaden past a specific binding, and it
+   requires the change event to say so explicitly — it is never the default.
+3. If `affected_scope = unknown`, or the field is absent (legacy event): apply the
+   **sole-candidate fallback** — gather every candidate binding known for this principal that
+   was open (not yet closed) at `effective_at`. If exactly one candidate exists, resolve to it
+   (this is elimination, not an assumption — there was nothing else it could mean). If more than
+   one candidate exists, the affected set is **indeterminate**: report `insufficient_evidence`
+   for every candidate, never guess by picking the "obvious" one. If zero candidates exist (no
+   retained `.open` event for this principal at all), the change still applies to any
+   `.notification`/`.close` events that **explicitly** carry a matching `mcp.authz.binding_id`
+   of their own (directly-scoped invalidation needs no retained open event); absent that, there
+   is nothing to resolve and the change produces no finding (not insufficient evidence — there is
+   simply no observed stream it could apply to).
+
+For `mcp.authz.change.type = scope_downgraded` specifically, a binding in the affected set is
+only actually invalidated for a given instance if `removed_scope` intersects that instance's
+`required_scope`. If either is missing, that instance's relevance is unresolved
+(`insufficient_evidence`), not defaulted to safe or unsafe.
+
+### Validity intervals and proven reauthorization
+
+Each binding has a validity interval, not a single point: valid from when it started backing an
+instance until it is invalidated (by the algorithm above) or its own `valid_until`/`grant_expiry`
+is reached. **A subscription instance's notifications are checked against the binding recorded on
+that specific notification** (or, if absent, the instance's open-time binding) — never against
+"whatever binding is currently valid for this principal elsewhere." Concretely:
+- An old binding expiring or being revoked **after** a proven reauthorization (a later
+  notification explicitly carrying a new, still-valid `binding_id`) does not affect that later
+  notification — it is evaluated against the *new* binding's own interval.
+- A **new, unrelated** binding becoming valid for the same principal does not retroactively clear
+  an earlier violation on the old binding — the old notification is still evaluated against the
+  binding it actually carried (or its instance's open-time binding).
+- Token refresh alone is never assumed to reauthorize an existing stream — only an explicit
+  `mcp.authz.binding_id` on a later `.notification` constitutes proof of rebinding.
+
+### Three-outcome reporting (this revision)
+
+Every evaluated notification produces exactly one of three outcomes, reported separately from
+each other so reduced evaluability can never masquerade as clean detection:
+
+- **`confirmed_drift`** — the notification's timestamp is strictly after the resolved,
+  authoritative invalidation boundary of the binding that backs it, with no qualifying close at
+  or before it, and scope resolution (above) was unambiguous.
+- **`evaluated_no_violation`** — evidence was sufficient to reach a definitive answer, and no
+  violation was found (before the boundary, a close intervened, a downgrade's removed scope did
+  not intersect the instance's required scope, the change type does not invalidate, or the
+  notification is proven-rebound to a separate, still-valid binding).
+- **`insufficient_evidence`** — resolution could not be completed: ambiguous scope (more than one
+  sole-candidate binding), missing scope data needed for a downgrade-relevance check, conflicting
+  evidence (two authoritative signals about the same binding that cannot both be true), an
+  incompatible hash-key epoch between compared events, or `detected_at`-only timing with no
+  authoritative boundary available.
+
+If content sensitivity matters for triage, also read
 `mcp.subscription.notification.contains_inline_result` and `notification_type` — per Block 1
 §11, an ordinary `notifications/resources/updated` drift is a metadata/activity exposure, while
 a `notifications/tasks` drift with `contains_inline_result = true` is the separately-flagged,

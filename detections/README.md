@@ -278,16 +278,26 @@ explicitly low-confidence/informational query, never merged into the primary res
   `valid_until` and the system that timestamps notifications.
 
 **Limitations.**
-- **[Scope boundary, NOT fixed]** The revocation-leg join is by `principal.id_hash` only
-  (`authorization_change` events carry no subscription id at all), so a principal holding two or
-  more concurrent subscriptions — one revoked, one still legitimately valid — can have the
-  still-valid subscription's notifications cross-correlated against the other's revocation
-  boundary. Now empirically demonstrated by fixture V11-11
-  (`data/validation/track3/v11_same_principal_cross_subscription_risk.jsonl`) — see
-  `docs/validation-report.md`, "Track 3 remediation pass" / "remaining risks." Not fixable
-  without inventing a subscription-id field on `authorization_change` events that does not exist
-  in the locked telemetry contract, and doing so would reintroduce the malformed-telemetry blind
-  spot (fixture V6-02).
+- **[Code defect, FIXED in a second remediation pass] Revocation scope is now resolved to a
+  specific authorization binding, not a principal.** The previous pass's revocation-leg join was
+  by `principal.id_hash` only, so a principal holding two or more concurrent subscriptions could
+  have a still-valid subscription's notifications cross-correlated against a different one's
+  revocation (empirically demonstrated by fixture V11-11, retained unmodified as a worked
+  legacy-telemetry example). Verified against current MCP/OAuth documentation, "same principal"
+  is not "same authorization scope" — a principal can hold multiple independent,
+  independently-revocable grants. Fixed via new fields `mcp.authz.binding_id` and
+  `mcp.authz.change.affected_scope`/`affected_binding_ids` (no subscription-id field on
+  `authorization_change` was needed, and the malformed-telemetry case fixture V6-02 covers
+  remains unaffected). See fixture V12-13 and `docs/validation-report.md`, "Track 3 remediation
+  pass, part 2." **Deployment prerequisite this introduces**: a deployment that never emits the
+  new fields gets `insufficient_evidence` on genuine ambiguity (the safe default) rather than a
+  fully resolved answer.
+- **[Scope boundary, still not fully closed] A scope downgrade's relevance to a given
+  subscription cannot be determined without both `mcp.subscription.required_scope` and
+  `mcp.authz.change.removed_scope`.** Either missing reports `insufficient_evidence`
+  (fixtures V5-02, V12-09) rather than guessing "irrelevant" or "invalidating." Deployments that
+  never emit these two fields cannot get a resolved answer for downgrades specifically, even
+  though revocation/expiry resolution works from the other new fields alone.
 - **[Code defects, FIXED]** A Track 3 remediation pass found and fixed: (a) SPL's expiry-leg and
   close-suppression joins previously keyed on `subscription_id` alone, inconsistent with KQL,
   which could let one principal's close/expiry data affect a different principal's notification

@@ -589,10 +589,13 @@ function t2_v4_authorizationTelemetryDisabled() {
 
 function sub(evts, clock, ctx, opt) {
   evts.push(envelope(clock.iso(), 'mcp.subscription.open', 'session', {
-    ...ctx, fields: {
+    ...ctx, keyId: opt.keyId, fields: {
       'jsonrpc.request.id': opt.subId, 'mcp.subscription.id': opt.subId,
+      ...(opt.instanceId ? { 'mcp.subscription.instance_id': opt.instanceId } : {}),
       'principal.id_hash': opt.principalHash, 'principal.authenticated': true,
       'mcp.authz.grant_snapshot_hash': hmacHash('grant:' + opt.subId),
+      ...(opt.bindingId ? { 'mcp.authz.binding_id': opt.bindingId } : {}),
+      ...(opt.requiredScope ? { 'mcp.subscription.required_scope': opt.requiredScope } : {}),
       ...(opt.validUntil ? { 'mcp.authz.grant_expiry': opt.validUntil, 'mcp.authz.valid_until': opt.validUntil } : {})
     }
   }));
@@ -602,11 +605,14 @@ function sub(evts, clock, ctx, opt) {
 }
 function notify(evts, clock, ctx, opt) {
   evts.push(envelope(clock.iso(), 'mcp.subscription.notification', 'session', {
-    ...ctx, fields: {
+    ...ctx, keyId: opt.keyId, fields: {
       'mcp.subscription.id': opt.subId === undefined ? undefined : opt.subId,
+      ...(opt.instanceId ? { 'mcp.subscription.instance_id': opt.instanceId } : {}),
       'principal.id_hash': opt.principalHash, 'mcp.subscription.state': 'active',
       'mcp.subscription.notification_type': opt.type || 'notifications/resources/updated',
-      ...(opt.uriHash ? { 'mcp.subscription.notification.resource_uri_hash': opt.uriHash } : {})
+      ...(opt.uriHash ? { 'mcp.subscription.notification.resource_uri_hash': opt.uriHash } : {}),
+      ...(opt.bindingId ? { 'mcp.authz.binding_id': opt.bindingId } : {}),
+      ...(opt.validUntil ? { 'mcp.authz.valid_until': opt.validUntil } : {})
     }
   }));
 }
@@ -617,13 +623,20 @@ function change(evts, clock, ctx, opt) {
       'mcp.authz.change.source': opt.source || 'authorization_server_event',
       ...(opt.effectiveAt ? { 'mcp.authz.change.effective_at': opt.effectiveAt } : {}),
       'mcp.authz.change.detected_at': opt.detectedAt,
-      'mcp.authz.change.timing_confidence': opt.confidence
+      'mcp.authz.change.timing_confidence': opt.confidence,
+      ...(opt.affectedScope ? { 'mcp.authz.change.affected_scope': opt.affectedScope } : {}),
+      ...(opt.affectedBindingIds ? { 'mcp.authz.change.affected_binding_ids': opt.affectedBindingIds } : {}),
+      ...(opt.removedScope ? { 'mcp.authz.change.removed_scope': opt.removedScope } : {})
     }
   }));
 }
 function closeSub(evts, clock, ctx, opt) {
   evts.push(envelope(clock.iso(), 'mcp.subscription.close', 'session', {
-    ...ctx, fields: { 'event.outcome': 'success', 'mcp.subscription.id': opt.subId, 'principal.id_hash': opt.principalHash, 'mcp.subscription.state': opt.state || 'closed_graceful', 'mcp.subscription.close.reason': opt.reason }
+    ...ctx, fields: {
+      'event.outcome': 'success', 'mcp.subscription.id': opt.subId,
+      ...(opt.instanceId ? { 'mcp.subscription.instance_id': opt.instanceId } : {}),
+      'principal.id_hash': opt.principalHash, 'mcp.subscription.state': opt.state || 'closed_graceful', 'mcp.subscription.close.reason': opt.reason
+    }
   }));
 }
 
@@ -661,11 +674,11 @@ function t3_gracePeriodPolicy() {
   corpus.pushAll(file, evts);
   record({
     scenario_id: 'V5-02', file,
-    purpose: 'ACCEPTED, DOCUMENTED FALSE POSITIVE: a notification is delivered 3 minutes after a scope downgrade, within a hypothetical deployment-defined 5-minute grace period during which continuing to deliver non-sensitive list-changed notifications is an explicit, documented policy decision. The locked Block 2 schema has NO field encoding a grace-period duration, so the current rule logic (correctly, given available telemetry) still flags this.',
-    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
-    expected_confidence: 'high', false_positive_test: true, evasion_test: false,
-    telemetry_limitation: 'No mcp.*.grace_period field exists in the locked telemetry contract (Block 2). Adding one would be a schema change, out of scope for a rule-tuning pass. Tuning recommendation (deployment-side, not a rule change): apply a per-deployment grace-period CONSTANT in the query (boundary + grace_period) rather than inventing a new field. See docs/false-positive-analysis.md.',
-    notes: 'Deliberately left unfixed -- see docs/validation-report.md "false positives discovered, not fixed".'
+    purpose: 'RECLASSIFIED BY THE SCOPE-AWARE TRACK 3 CORRECTION (see docs/validation-report.md "Track 3 remediation pass, part 2"): a notification is delivered 3 minutes after a scope downgrade, within a hypothetical deployment-defined 5-minute grace period. This fixture predates mcp.subscription.required_scope/mcp.authz.change.removed_scope: neither the subscription\'s required scope nor the specific scope removed by the downgrade is known. Per the corrected model, a scope_downgraded change does NOT necessarily remove permission for a given subscription (verified against MCP\'s authorization spec, which requires servers to reason about scope per operation, not as a blanket grant) -- relevance is unresolved without both scope values, and this now correctly reports insufficient_evidence rather than mechanically firing as a "confirmed but accepted" false positive. This is a genuine improvement, not a relabel: the previous behavior conflated "we don\'t know if this matters" with "this is a real, if excusable, violation."',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'insufficient_evidence', false_positive_test: true, evasion_test: false,
+    telemetry_limitation: 'Previously: no mcp.*.grace_period field exists in the locked telemetry contract, so the rule mechanically fired and the false positive was "accepted." Now: no mcp.subscription.required_scope/mcp.authz.change.removed_scope exist in this legacy-shaped fixture either, so scope relevance cannot be evaluated at all -- correctly insufficient_evidence rather than confirmed. A deployment wanting a definitive answer here needs to emit both scope fields; a deployment additionally wanting to suppress a genuinely-relevant downgrade during a grace window still needs deployment-side tuning (a grace-period constant), which remains out of scope for this project\'s base query. See docs/false-positive-analysis.md.',
+    notes: 'PRE-CORRECTION: reported confirmed_drift (fired=true), an accepted false positive. POST-CORRECTION: reports insufficient_evidence (still flagged false_positive_test=true, since it remains a fixture specifically probing this false-positive-prone shape -- it just no longer mechanically fires while probing it).'
   });
 }
 
@@ -1004,11 +1017,11 @@ function t3_v11_revocationNoRetainedOpenEvent() {
   corpus.pushAll(file, evts);
   record({
     scenario_id: 'V11-05', file,
-    purpose: 'REGRESSION (this pass): the revocation-leg join (principal_hash only) must not require an mcp.subscription.open event to exist at all -- this fixture has NONE. The real KQL/SPL revocation leg never references the Notifications-vs-Opens relationship, only Notifications-vs-AuthoritativeChanges by principal, so this must still fire. The previous oracle bailed out entirely to not_applicable whenever no open event existed, which was stricter than the real query and would have produced a false negative here.',
-    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
-    expected_confidence: 'high', false_positive_test: false, evasion_test: false,
-    telemetry_limitation: null,
-    notes: null
+    purpose: 'RETAINED AS AMBIGUOUS LEGACY TELEMETRY (reclassified in the scope-aware Track 3 correction -- see docs/validation-report.md "Track 3 remediation pass, part 2"). This fixture predates mcp.authz.binding_id/affected_scope: a bare principal-scoped revocation with NO retained open event and NO evidence of which binding it targets. The PREVIOUS pass\'s oracle mechanically fired here via a principal-only join -- exactly the join pattern the scope-aware correction identifies as unsound in general (principal identity does not establish revocation scope) and specifically forbids as a fallback. With zero known bindings for this principal and no directly-scoped evidence on the notification itself, this now correctly reports insufficient_evidence rather than a confirmed drift. See V12-09 for the corrected counterpart proving the SAME "no retained open event" shape resolves correctly once real scope evidence is present.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'insufficient_evidence', false_positive_test: false, evasion_test: true,
+    telemetry_limitation: 'Classification: DETECTABLE only in the narrow, mechanical, PRE-CORRECTION sense (the previous-pass rule fired here). AMBIGUOUS LEGACY TELEMETRY under the corrected model: no mcp.authz.binding_id, no affected_scope, and no retained mcp.subscription.open event exist anywhere in this fixture, so there is no way to determine which (if any) binding this principal-scoped revocation is meant to invalidate. Reclassified from a previous-pass confirmed_drift finding into insufficient_evidence -- see docs/validation-report.md for why the earlier behavior was a genuine, now-corrected scope-resolution defect, not merely relabeled.',
+    notes: 'PRE-CORRECTION: reported confirmed_drift (fired=true) via a principal-only join. POST-CORRECTION: reports insufficient_evidence. This is a deliberate reclassification, not a silent exclusion -- it still counts in coverage metrics, in the insufficient_evidence bucket.'
   });
 }
 
@@ -1018,11 +1031,15 @@ function t3_v11_closeOnOtherSubscription() {
   const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
   const evts = [];
   const p = hmacHash('principal:alice-v11-06');
-  sub(evts, clock, ctx, { subId: '10006', principalHash: p, validUntil: '2026-10-01T21:00:00.000Z' }); // subscription A -- stays open
+  const bindingA = 'binding:v11-06:A', bindingB = 'binding:v11-06:B';
+  sub(evts, clock, ctx, { subId: '10006', principalHash: p, bindingId: bindingA, validUntil: '2026-10-01T21:00:00.000Z' }); // subscription A -- stays open
   clock.t = Date.parse('2026-10-01T19:16:00.000Z');
-  sub(evts, clock, ctx, { subId: '10007', principalHash: p, validUntil: '2026-10-01T21:00:00.000Z' }); // subscription B -- same principal, different id
+  sub(evts, clock, ctx, { subId: '10007', principalHash: p, bindingId: bindingB, validUntil: '2026-10-01T21:00:00.000Z' }); // subscription B -- same principal, different id AND different binding
   clock.t = Date.parse('2026-10-01T19:20:00.000Z');
-  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' });
+  // Explicitly scoped to binding B ONLY -- this fixture tests close-suppression's instance
+  // scoping, not scope resolution, so the revocation is unambiguously targeted so as not to
+  // collide with the separate (deliberately ambiguous) V11-11/V12-10 scenarios.
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [bindingA] });
   clock.t = Date.parse('2026-10-01T19:22:00.000Z');
   closeSub(evts, clock, ctx, { subId: '10007', principalHash: p, reason: 'client_disconnect' }); // closes B, NOT A
   clock.t = Date.parse('2026-10-01T19:25:00.000Z');
@@ -1030,7 +1047,7 @@ function t3_v11_closeOnOtherSubscription() {
   corpus.pushAll(file, evts);
   record({
     scenario_id: 'V11-06', file,
-    purpose: 'REGRESSION (this pass): the same principal holds two subscriptions; one (B) is closed, the other (A) is not. A\'s post-revocation notification must still fire -- B\'s close must not suppress it. Confirms close-suppression is correctly scoped by subscription_id (not just principal_hash) in the direction opposite to the V11-02/close-suppression fix above.',
+    purpose: 'REGRESSION: the same principal holds two subscriptions on two distinct bindings (A, B); the revocation explicitly names binding A only (affected_scope=binding). B is closed, A is not. A\'s post-revocation notification must still fire -- B\'s close must not suppress it, AND the explicit binding scoping must correctly exclude B from the revocation regardless. Confirms close-suppression is correctly scoped by instance (not just principal_hash), tested here with unambiguous binding evidence so this fixture exercises the close-scoping fix specifically, not the separate scope-ambiguity handling covered by V11-11/V12-10.',
     expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
     expected_confidence: 'high', false_positive_test: false, evasion_test: false,
     telemetry_limitation: null,
@@ -1150,11 +1167,346 @@ function t3_v11_samePrincipalCrossSubscriptionRisk() {
   corpus.pushAll(file, evts);
   record({
     scenario_id: 'V11-11', file,
-    purpose: 'KNOWN, DOCUMENTED, UNRESOLVED RISK (explicitly NOT fixed in this pass -- see docs/validation-report.md "remaining risks" and the comments in detections/kql/mcp_subscription_authorization_drift.kql / detections/spl/...spl / tests/attack/track3util.js): a principal holds two concurrent subscriptions. A revocation event (principal-scoped, no subscription id available at all) is emitted. Subscription B\'s notification, though still legitimately valid in this fixture\'s hypothetical ground truth, MECHANICALLY fires because the revocation-leg join can only scope by principal_hash -- there is no subscription-id field on authorization_change events to narrow it further. This is reported as an unresolved scope boundary, not silently fixed by inventing a field or a grace period.',
+    purpose: 'RETAINED, DELIBERATELY UNMODIFIED, AS AMBIGUOUS LEGACY TELEMETRY (reclassified by the scope-aware Track 3 correction -- see docs/validation-report.md "Track 3 remediation pass, part 2"). A principal holds two concurrent subscriptions on this fixture\'s pre-correction, bare telemetry shape (no mcp.authz.binding_id, no affected_scope). A revocation event (principal-scoped, no subscription id, no scope evidence of any kind) is emitted. Subscription B\'s notification is now correctly reported as insufficient_evidence, NOT confirmed_drift -- the corrected resolver finds TWO candidate bindings for this principal at the change\'s effective_at and, per telemetry/correlation.md, explicitly refuses to guess which one (or both) the change affects, rather than mechanically firing on the wrong one as the previous-pass implementation did. See V12-10 for the corrected counterpart: same two-concurrent-subscription shape, but WITH explicit affected_binding_ids naming only the correct one, which resolves cleanly (A fires, B does not).',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'insufficient_evidence', false_positive_test: false, evasion_test: true,
+    telemetry_limitation: 'Classification: NOT DETECTABLE as a resolvable finding under the corrected model (correctly reported insufficient_evidence, not a confirmed drift or a clean clear). AMBIGUOUS LEGACY TELEMETRY: mcp.subscription.authorization_change carries no subscription id and (in this legacy-shaped fixture) no affected_scope/affected_binding_ids either, so a principal with multiple concurrent bindings genuinely cannot be disambiguated from this event alone. The PREVIOUS pass\'s oracle treated "same principal.id_hash" as sufficient scope and mechanically fired on subscription B -- verified against current MCP/OAuth documentation to be a genuine category error (principal identity does not establish revocation scope), not a stylistic one. The corrected resolver reports insufficient_evidence for BOTH candidate instances instead. Deployments emitting only this legacy shape have no way to resolve this ambiguity without upgrading to emit mcp.authz.binding_id and mcp.authz.change.affected_scope/affected_binding_ids -- see V12-13 for the corrected, resolvable counterpart.',
+    notes: 'PRE-CORRECTION: reported confirmed_drift (fired=true) on subscription B, mechanically, via a principal-only join -- the exact defect this pass fixes. POST-CORRECTION: reports insufficient_evidence for both A and B. This is a deliberate, documented reclassification (not a silent relabel, not an exclusion from metrics) -- it is still counted, now in the insufficient_evidence bucket of the coverage report.'
+  });
+}
+
+// ===========================================================================
+// TRACK 3 -- V12 scope-aware correction fixtures (binding/instance-scoped resolution --
+// see telemetry/correlation.md "Resolving affected bindings" and docs/validation-report.md
+// "Track 3 remediation pass, part 2"). Each fixture targets one specific new-model behavior
+// requested for this pass; several are corrected counterparts to a retained, deliberately
+// ambiguous legacy fixture (V11-05, V11-11) rather than replacements for it.
+// ===========================================================================
+
+function t3_v12_sameprincipalOnlyOneAlerts() {
+  const file = 'track3/v12_same_principal_only_a_alerts.jsonl';
+  const clock = new Clock('2026-10-02T09:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-01');
+  const bindingA = 'binding:v12-01:A', bindingB = 'binding:v12-01:B';
+  sub(evts, clock, ctx, { subId: '20001', principalHash: p, bindingId: bindingA, validUntil: '2026-10-02T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T09:01:00.000Z');
+  sub(evts, clock, ctx, { subId: '20002', principalHash: p, bindingId: bindingB, validUntil: '2026-10-02T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T09:05:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [bindingA] });
+  clock.t = Date.parse('2026-10-02T09:10:00.000Z');
+  notify(evts, clock, ctx, { subId: '20001', principalHash: p, uriHash: hmacHash('resource:v12-01-a') });
+  notify(evts, clock, ctx, { subId: '20002', principalHash: p, uriHash: hmacHash('resource:v12-01-b') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-01', file,
+    purpose: 'NEW REGRESSION: same principal holds two independently-bound subscriptions (A, B). The revocation explicitly names binding A only (affected_scope=binding). Only A\'s post-revocation notification confirms drift; B\'s is definitively cleared (evaluated_no_violation), not left ambiguous and not swept up by a principal-only join. Directly demonstrates the scope-aware correction\'s core behavior.',
     expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
-    expected_confidence: 'high', false_positive_test: false, evasion_test: true,
-    telemetry_limitation: 'Classification: DETECTABLE only in the narrow, mechanical sense that the rule fires on subscription B\'s notification -- whether that fire is a TRUE or FALSE positive is UNRESOLVED given current telemetry (unlike a clean NOT DETECTABLE or PARTIALLY DETECTABLE case). mcp.subscription.authorization_change carries no subscription id, so a principal with multiple concurrent subscriptions cannot be disambiguated at the revocation-leg join. Tightening the join to also require subscription_id would eliminate this risk but would reintroduce the V6-02 blind spot (a notification missing its own subscription_id would no longer correlate to a revocation at all). Not classified as false_positive_test because, absent ground truth in real deployments, whether this is actually benign is unknowable from telemetry alone -- unlike V5-02/V5-09, this is not a provably-benign accepted tradeoff.',
-    notes: 'This is the "same-principal cross-subscription correlation risk" explicitly called out in the Track 3 remediation instructions; kept unresolved by design.'
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null,
+    notes: 'See tests/validation/track3_row_regression.test.js for the exact per-subscription outcome split.'
+  });
+}
+
+function t3_v12_sharedGrantBothAlert() {
+  const file = 'track3/v12_shared_grant_both_alert.jsonl';
+  const clock = new Clock('2026-10-02T09:20:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-02');
+  const shared = 'binding:v12-02:shared';
+  sub(evts, clock, ctx, { subId: '20003', principalHash: p, bindingId: shared, validUntil: '2026-10-02T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T09:21:00.000Z');
+  sub(evts, clock, ctx, { subId: '20004', principalHash: p, bindingId: shared, validUntil: '2026-10-02T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T09:25:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [shared] });
+  clock.t = Date.parse('2026-10-02T09:30:00.000Z');
+  notify(evts, clock, ctx, { subId: '20003', principalHash: p, uriHash: hmacHash('resource:v12-02-a') });
+  notify(evts, clock, ctx, { subId: '20004', principalHash: p, uriHash: hmacHash('resource:v12-02-b') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-02', file,
+    purpose: 'NEW REGRESSION: two concurrent subscriptions are legitimately opened under the SAME shared binding (e.g. one OAuth grant backing two listen streams). The revocation explicitly names that one binding. BOTH subscriptions correctly confirm drift -- affected_binding_ids correctly reaches every instance that genuinely shares the named binding, not just one arbitrarily-picked instance.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null,
+    notes: null
+  });
+}
+
+function t3_v12_unrelatedScopeRemoved() {
+  const file = 'track3/v12_unrelated_scope_removed.jsonl';
+  const clock = new Clock('2026-10-02T09:40:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-03');
+  const binding = 'binding:v12-03';
+  sub(evts, clock, ctx, { subId: '20005', principalHash: p, bindingId: binding, requiredScope: ['resources:read'], validUntil: '2026-10-02T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T09:45:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['resources:write'] });
+  clock.t = Date.parse('2026-10-02T09:50:00.000Z');
+  notify(evts, clock, ctx, { subId: '20005', principalHash: p, uriHash: hmacHash('resource:v12-03') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-03', file,
+    purpose: 'NEW REGRESSION: a scope_downgraded change correctly names this instance\'s own binding, but removes a permission ("resources:write") this instance never depended on (required_scope=["resources:read"]). Must NOT fire -- a downgrade that correctly targets the right binding still does not invalidate it unless the removed permission is one it actually required.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: true, evasion_test: false,
+    telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v12_requiredScopeRemoved() {
+  const file = 'track3/v12_required_scope_removed.jsonl';
+  const clock = new Clock('2026-10-02T10:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-04');
+  const binding = 'binding:v12-04';
+  sub(evts, clock, ctx, { subId: '20006', principalHash: p, bindingId: binding, requiredScope: ['resources:read'], validUntil: '2026-10-02T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T10:05:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding], removedScope: ['resources:read'] });
+  clock.t = Date.parse('2026-10-02T10:10:00.000Z');
+  notify(evts, clock, ctx, { subId: '20006', principalHash: p, uriHash: hmacHash('resource:v12-04') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-04', file,
+    purpose: 'NEW REGRESSION, contrast with V12-03: the scope_downgraded change removes "resources:read", which this instance\'s required_scope names directly. Must fire -- this is a genuinely relevant downgrade, correctly confirmed via the intersection check.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v12_sameWireIdAcrossTenants() {
+  const file = 'track3/v12_same_wire_id_across_tenants.jsonl';
+  const clock = new Clock('2026-10-02T10:20:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-05');
+  const bindingA = 'binding:v12-05:A', bindingB = 'binding:v12-05:B';
+  // Both instances reuse the identical WIRE subscription_id ("1") -- plausible since it is only
+  // the JSON-RPC id of that connection's own listen request (MCP subscriptions pattern: no
+  // state survives a reconnect, and nothing prevents two different servers/tenants from handing
+  // out request id "1"). instance_id disambiguates them.
+  sub(evts, clock, ctx, { subId: '1', instanceId: 'tenant1:server1:1:nonceA', principalHash: p, bindingId: bindingA, validUntil: '2026-10-02T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T10:21:00.000Z');
+  sub(evts, clock, ctx, { subId: '1', instanceId: 'tenant2:server9:1:nonceB', principalHash: p, bindingId: bindingB, validUntil: '2026-10-02T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T10:25:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [bindingA] });
+  clock.t = Date.parse('2026-10-02T10:30:00.000Z');
+  notify(evts, clock, ctx, { subId: '1', instanceId: 'tenant1:server1:1:nonceA', principalHash: p, uriHash: hmacHash('resource:v12-05-a') });
+  notify(evts, clock, ctx, { subId: '1', instanceId: 'tenant2:server9:1:nonceB', principalHash: p, uriHash: hmacHash('resource:v12-05-b') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-05', file,
+    purpose: 'NEW REGRESSION: two subscription instances (different tenants/servers, a plausible reconnect/reopen shape) reuse the identical WIRE mcp.subscription.id ("1"). Only the tenant1 instance\'s binding is revoked. Proves mcp.subscription.instance_id (not the wire id) is the true join key -- the tenant2 instance is correctly unaffected despite the identical subscription_id string.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null,
+    notes: 'Generalizes V11-02 (same wire id, different principals) to the same-principal, different-tenant/reconnect case.'
+  });
+}
+
+function t3_v12_oldBindingExpiresAfterProvenReplacement() {
+  const file = 'track3/v12_old_binding_expires_after_replacement.jsonl';
+  const clock = new Clock('2026-10-02T10:40:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-06');
+  const oldBinding = 'binding:v12-06:old', newBinding = 'binding:v12-06:new';
+  sub(evts, clock, ctx, { subId: '20007', principalHash: p, bindingId: oldBinding, validUntil: '2026-10-02T10:50:00.000Z' });
+  clock.t = Date.parse('2026-10-02T10:42:00.000Z');
+  notify(evts, clock, ctx, { subId: '20007', principalHash: p, uriHash: hmacHash('resource:v12-06-a') }); // before old binding's own expiry -- fine
+  // Proven reauthorization: a LATER notification explicitly carries a NEW, still-valid binding_id
+  // and its own (later) valid_until -- this is the only telemetry-grounded proof of rebinding.
+  clock.t = Date.parse('2026-10-02T10:55:00.000Z'); // AFTER the OLD binding's expiry (10:50)
+  notify(evts, clock, ctx, { subId: '20007', principalHash: p, uriHash: hmacHash('resource:v12-06-b'), bindingId: newBinding, validUntil: '2026-10-02T12:00:00.000Z' });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-06', file,
+    purpose: 'NEW REGRESSION: the subscription\'s original binding expires at 10:50. A later notification (10:55, after that expiry) explicitly proves it was re-validated and rebound to a NEW, still-valid binding (its own binding_id + valid_until). Must NOT fire -- the old binding\'s expiry does not contaminate a proven-valid new binding; evaluation follows the binding actually backing each notification, not the instance\'s original one.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: true, evasion_test: false,
+    telemetry_limitation: 'Requires the server to emit mcp.authz.binding_id (and a fresh mcp.authz.valid_until) on the notification itself to prove rebinding -- a deployment that never does this cannot benefit from this leniency, and correctly falls back to evaluating every notification against the instance\'s original open-time binding.',
+    notes: null
+  });
+}
+
+function t3_v12_newUnrelatedAuthDoesNotSuppressOldViolation() {
+  const file = 'track3/v12_new_unrelated_auth_no_suppress.jsonl';
+  const clock = new Clock('2026-10-02T11:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-07');
+  const oldBinding = 'binding:v12-07:old', newBinding = 'binding:v12-07:new';
+  sub(evts, clock, ctx, { subId: '20008', principalHash: p, bindingId: oldBinding, validUntil: '2026-10-02T13:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T11:05:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [oldBinding] });
+  clock.t = Date.parse('2026-10-02T11:10:00.000Z');
+  // An entirely unrelated NEW binding becomes valid for the SAME principal (e.g. a fresh,
+  // unrelated subscription elsewhere) -- its mere existence must not clear the old violation.
+  sub(evts, clock, ctx, { subId: '20009', principalHash: p, bindingId: newBinding, validUntil: '2026-10-02T13:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T11:15:00.000Z');
+  // This notification is on the ORIGINAL (old-binding) instance and carries no binding_id of
+  // its own -- it must still be evaluated against ITS OWN (old, now-revoked) binding.
+  notify(evts, clock, ctx, { subId: '20008', principalHash: p, uriHash: hmacHash('resource:v12-07') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-07', file,
+    purpose: 'NEW REGRESSION, contrast with V12-06: a brand-new, UNRELATED binding becomes valid for the same principal after the old binding was revoked -- but the original subscription\'s own notification is never proven-rebound to it (carries no binding_id of its own). Must still fire -- token refresh/a new unrelated grant existing elsewhere is never assumed to reauthorize an existing stream absent explicit proof.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v12_outOfOrderArrivalTrustworthyTiming() {
+  const file = 'track3/v12_out_of_order_arrival.jsonl';
+  const clock = new Clock('2026-10-02T11:30:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-08');
+  const binding = 'binding:v12-08';
+  sub(evts, clock, ctx, { subId: '20010', principalHash: p, bindingId: binding, validUntil: '2026-10-02T13:00:00.000Z' });
+  // The notification is APPENDED to the event stream FIRST (arrival/log order)...
+  clock.t = Date.parse('2026-10-02T11:40:00.000Z');
+  notify(evts, clock, ctx, { subId: '20010', principalHash: p, uriHash: hmacHash('resource:v12-08') });
+  // ...even though the authoritative change that invalidates it -- by EFFECTIVE time -- precedes
+  // the notification, and is only recorded/detected (and appended to the stream) afterward.
+  clock.t = Date.parse('2026-10-02T11:45:00.000Z'); // this change's own detected_at/log position
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-02T11:35:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-08', file,
+    purpose: 'NEW REGRESSION: the authorization_change event is appended to the event stream AFTER the notification it invalidates (later arrival/detected_at/log position), but its effective_at (11:35) precedes the notification (11:40). Must fire -- resolution depends solely on effective_at field values, never on event array position, arrival order, or detected_at.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v12_missingScopeEvidence() {
+  const file = 'track3/v12_missing_scope_evidence.jsonl';
+  const clock = new Clock('2026-10-02T12:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-09');
+  const binding = 'binding:v12-09';
+  sub(evts, clock, ctx, { subId: '20011', principalHash: p, bindingId: binding, requiredScope: ['resources:read'], validUntil: '2026-10-02T14:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T12:05:00.000Z');
+  // scope_downgraded but the authorization server did NOT report which scope was removed.
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_downgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
+  clock.t = Date.parse('2026-10-02T12:10:00.000Z');
+  notify(evts, clock, ctx, { subId: '20011', principalHash: p, uriHash: hmacHash('resource:v12-09') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-09', file,
+    purpose: 'NEW REGRESSION: the downgrade correctly and unambiguously names this instance\'s binding, and the instance\'s own required_scope is known -- but mcp.authz.change.removed_scope is missing (the authorization server did not report which scope was removed). Relevance genuinely cannot be determined from one-sided scope evidence. Must report insufficient_evidence, never default to "irrelevant" (silently clearing a possible real violation) or "invalidating" (a false positive).',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'insufficient_evidence', false_positive_test: false, evasion_test: true,
+    telemetry_limitation: 'PARTIALLY DETECTABLE: the binding and instance are unambiguously identified, but scope relevance cannot be resolved without mcp.authz.change.removed_scope. A deployment wanting a definitive answer must emit it.',
+    notes: null
+  });
+}
+
+function t3_v12_conflictingEvidence() {
+  const file = 'track3/v12_conflicting_evidence.jsonl';
+  const clock = new Clock('2026-10-02T12:20:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-10');
+  const binding = 'binding:v12-10';
+  sub(evts, clock, ctx, { subId: '20012', principalHash: p, bindingId: binding, validUntil: '2026-10-02T14:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T12:25:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
+  clock.t = Date.parse('2026-10-02T12:26:00.000Z');
+  // A SECOND authoritative, explicitly-scoped change for the SAME binding claims a scope
+  // UPGRADE -- operationally inconsistent with a binding that was just revoked (a revoked
+  // binding should not legitimately receive further grants). Neither can be trusted over the
+  // other from telemetry alone.
+  change(evts, clock, ctx, { principalHash: p, type: 'scope_upgraded', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
+  clock.t = Date.parse('2026-10-02T12:30:00.000Z');
+  notify(evts, clock, ctx, { subId: '20012', principalHash: p, uriHash: hmacHash('resource:v12-10') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-10', file,
+    purpose: 'NEW REGRESSION: two authoritative changes both explicitly name the SAME binding -- one revokes it, another (a scope upgrade) implies it remains active -- a data-quality conflict, not a timeline to order by picking whichever is "later". Must report insufficient_evidence for this binding rather than resolving the conflict by fiat.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'insufficient_evidence', false_positive_test: false, evasion_test: true,
+    telemetry_limitation: 'Classification: NOT DETECTABLE as a clean confirm/clear -- NOT RESOLVABLE FROM TELEMETRY ALONE: two authoritative sources disagree about the same binding\'s current state. Resolving this requires deployment-side data-quality investigation (e.g. auditing the authorization server\'s own event log for that binding), not a query-level tiebreak rule.',
+    notes: null
+  });
+}
+
+function t3_v12_incompatibleHashEpoch() {
+  const file = 'track3/v12_incompatible_hash_epoch.jsonl';
+  const clock = new Clock('2026-10-02T12:40:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-11');
+  const binding = 'binding:v12-11';
+  sub(evts, clock, ctx, { subId: '20013', principalHash: p, bindingId: binding, validUntil: '2026-10-02T14:00:00.000Z', keyId: 'block3-test-key-v1' });
+  clock.t = Date.parse('2026-10-02T12:45:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
+  clock.t = Date.parse('2026-10-02T12:50:00.000Z');
+  // A mid-life key rotation: this notification's hashed fields were produced under a DIFFERENT
+  // key epoch than the instance's own open event -- they are not safely comparable, per
+  // telemetry/schema.md SS6.
+  notify(evts, clock, ctx, { subId: '20013', principalHash: p, uriHash: hmacHash('resource:v12-11'), keyId: 'hypothetical-rotated-key-v2' });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-11', file,
+    purpose: 'NEW REGRESSION: the subscription\'s open event and its later notification carry DIFFERENT security.hash.key_id values (a key rotation occurred mid-lifetime). Their hashed fields are not safely comparable per telemetry/schema.md SS6. Must report insufficient_evidence (incompatible hash epoch), never silently proceed as if the values still corresponded, and never silently treat the mismatch as "no evidence, therefore clean".',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'insufficient_evidence', false_positive_test: false, evasion_test: true,
+    telemetry_limitation: 'Classification: NOT DETECTABLE as a clean confirm/clear -- NOT RESOLVABLE FROM TELEMETRY ALONE: a key rotation boundary was crossed within a single subscription instance\'s own lifetime. See telemetry/schema.md SS6 "controlled overlap" / "explicit epoch scoping" for the two supported deployment-side mitigations -- neither is implemented by this base query.',
+    notes: null
+  });
+}
+
+function t3_v12_directlyScopedNoRetainedOpen() {
+  const file = 'track3/v12_directly_scoped_no_retained_open.jsonl';
+  const clock = new Clock('2026-10-02T13:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-12');
+  const binding = 'binding:v12-12';
+  // No mcp.subscription.open event at all (e.g. dropped by retention) -- but the change AND the
+  // notification both carry direct, explicit binding evidence, so no retained open is needed.
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
+  clock.t = Date.parse('2026-10-02T13:10:00.000Z');
+  notify(evts, clock, ctx, { subId: '20014', principalHash: p, uriHash: hmacHash('resource:v12-12'), bindingId: binding });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-12', file,
+    purpose: 'NEW REGRESSION -- corrected counterpart to V11-05\'s retained-as-ambiguous shape: no mcp.subscription.open event exists anywhere, but the notification directly carries mcp.authz.binding_id matching the change\'s affected_binding_ids explicitly. Must fire -- directly scoped invalidation needs no retained open event; the ambiguity in V11-05 came from having NEITHER a retained open NOR direct binding evidence, not from the missing open event alone.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null,
+    notes: 'Contrast directly with V11-05 (same "no retained open" shape, but zero scope evidence -- reports insufficient_evidence instead).'
+  });
+}
+
+function t3_v12_correctedCrossSubscriptionCounterpart() {
+  const file = 'track3/v12_corrected_cross_subscription_counterpart.jsonl';
+  const clock = new Clock('2026-10-02T13:20:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v12-13');
+  const bindingA = 'binding:v12-13:A', bindingB = 'binding:v12-13:B';
+  sub(evts, clock, ctx, { subId: '20015', principalHash: p, bindingId: bindingA, validUntil: '2026-10-02T15:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T13:21:00.000Z');
+  sub(evts, clock, ctx, { subId: '20016', principalHash: p, bindingId: bindingB, validUntil: '2026-10-02T15:00:00.000Z' });
+  clock.t = Date.parse('2026-10-02T13:25:00.000Z');
+  // Same two-concurrent-subscription SHAPE as V11-11, but this time the change explicitly names
+  // exactly one binding -- proving the correction resolves cleanly once real scope evidence
+  // exists, in direct contrast with V11-11's retained ambiguity.
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [bindingA] });
+  clock.t = Date.parse('2026-10-02T13:30:00.000Z');
+  notify(evts, clock, ctx, { subId: '20015', principalHash: p, uriHash: hmacHash('resource:v12-13-a') });
+  notify(evts, clock, ctx, { subId: '20016', principalHash: p, uriHash: hmacHash('resource:v12-13-b') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V12-13', file,
+    purpose: 'CORRECTED COUNTERPART TO V11-11: the identical two-concurrent-subscription-per-principal shape, but WITH explicit affected_binding_ids naming only one binding. Resolves cleanly: the named binding\'s subscription confirms drift, the other is definitively cleared -- proving the correction is real, not merely that ambiguous cases are now hidden. See docs/validation-report.md "Track 3 remediation pass, part 2".',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null,
+    notes: 'Direct before/after pair with V11-11: identical shape, different (this time present) scope evidence, different (this time resolvable) outcome.'
   });
 }
 
@@ -1407,6 +1759,20 @@ t3_v11_notificationEqualsValidUntil();
 t3_v11_scopeUpgradeNoInvalidation();
 t3_v11_multipleCloseEvents();
 t3_v11_samePrincipalCrossSubscriptionRisk();
+
+t3_v12_sameprincipalOnlyOneAlerts();
+t3_v12_sharedGrantBothAlert();
+t3_v12_unrelatedScopeRemoved();
+t3_v12_requiredScopeRemoved();
+t3_v12_sameWireIdAcrossTenants();
+t3_v12_oldBindingExpiresAfterProvenReplacement();
+t3_v12_newUnrelatedAuthDoesNotSuppressOldViolation();
+t3_v12_outOfOrderArrivalTrustworthyTiming();
+t3_v12_missingScopeEvidence();
+t3_v12_conflictingEvidence();
+t3_v12_incompatibleHashEpoch();
+t3_v12_directlyScopedNoRetainedOpen();
+t3_v12_correctedCrossSubscriptionCounterpart();
 
 e_tinyMaliciousMismatch();
 e_hugeLegitimateResult();

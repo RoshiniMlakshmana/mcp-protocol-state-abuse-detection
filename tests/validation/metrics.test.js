@@ -2,14 +2,42 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadUnifiedCorpus, loadValidationCorpus, loadFullStressCorpus } = require('../detections/corpus');
-const { track1PrimaryFires, track1DiagnosticFires, track2Fires, track3PrimaryFires } = require('../detections/oracle');
+const { track1PrimaryFires, track1DiagnosticFires, track2Fires, track3PrimaryFires, track3Resolution } = require('../detections/oracle');
 const { evaluate, formatReport } = require('../detections/metrics');
 
-test('Block 6 corpus sanity: 48 scenarios, 220 events, separate from Block 3/4 on disk', () => {
+test('Track 3 coverage report (mechanically computed): confirmed_drift / evaluated_no_violation / insufficient_evidence, reported separately -- reduced evaluability must never masquerade as clean detection', () => {
+  const rows = loadFullStressCorpus().filter((r) => !r.experimental);
+  let confirmed = 0, noViolation = 0, insufficient = 0;
+  const reasons = {};
+  for (const row of rows) {
+    const { results } = track3Resolution(row.events);
+    for (const r of results) {
+      if (r.outcome === 'confirmed_drift') confirmed++;
+      else if (r.outcome === 'evaluated_no_violation') noViolation++;
+      else { insufficient++; reasons[r.reason] = (reasons[r.reason] || 0) + 1; }
+    }
+  }
+  const total = confirmed + noViolation + insufficient;
+  console.log(`\n=== Track 3 coverage (n=${total} evaluated notifications, full stress corpus) ===`);
+  console.log(`confirmed_drift=${confirmed} (${(100 * confirmed / total).toFixed(1)}%)  evaluated_no_violation=${noViolation} (${(100 * noViolation / total).toFixed(1)}%)  insufficient_evidence=${insufficient} (${(100 * insufficient / total).toFixed(1)}%)`);
+  console.log('insufficient_evidence reasons:', reasons);
+  // Pinned so a change to this count is a deliberate, reviewed decision (new fixture, or a real
+  // resolver change), not a silent drift -- see docs/validation-report.md for the full breakdown.
+  assert.equal(total, 53);
+  assert.equal(confirmed, 26);
+  assert.equal(noViolation, 20);
+  assert.equal(insufficient, 7);
+  assert.deepEqual(reasons, {
+    missing_scope_evidence: 2, no_invalidity_evidence: 2, ambiguous_scope: 1,
+    conflicting_evidence: 1, incompatible_hash_epoch: 1,
+  });
+});
+
+test('Block 6 corpus sanity: 61 scenarios, 285 events, separate from Block 3/4 on disk', () => {
   const rows = loadValidationCorpus();
-  assert.equal(rows.length, 48);
+  assert.equal(rows.length, 61);
   const totalEvents = rows.reduce((n, r) => n + r.events.length, 0);
-  assert.equal(totalEvents, 220);
+  assert.equal(totalEvents, 285);
   const fs = require('fs');
   const path = require('path');
   const normalDir = path.join(__dirname, '..', '..', 'data', 'normal');
@@ -37,13 +65,13 @@ test('CURATED CORE (Block 3 + Block 4, 31 scenarios): per-track metrics', () => 
   assert.equal(r3.fn, 0); assert.equal(r3.fp, 0);
 });
 
-test('FULL STRESS-TEST CORPUS (Block 3 + 4 + 6, 79 scenarios): per-track metrics -- NOT a real-world performance claim', () => {
+test('FULL STRESS-TEST CORPUS (Block 3 + 4 + 6, 92 scenarios): per-track metrics -- NOT a real-world performance claim', () => {
   const rows = loadFullStressCorpus();
-  assert.equal(rows.length, 79, '31 curated + 48 Block 6 validation scenarios');
+  assert.equal(rows.length, 92, '31 curated + 61 Block 6 validation scenarios');
   const r1 = evaluate(rows, track1PrimaryFires, 'expected1');
   const r2 = evaluate(rows, track2Fires, 'expected2');
   const r3 = evaluate(rows.filter((r) => !r.experimental), track3PrimaryFires, 'expected3');
-  console.log('\n=== FULL STRESS-TEST CORPUS (n=68) -- controlled-corpus correctness only ===');
+  console.log('\n=== FULL STRESS-TEST CORPUS (n=92) -- controlled-corpus correctness only ===');
   console.log(formatReport('Track 1', r1));
   console.log(formatReport('Track 2', r2));
   console.log(formatReport('Track 3', r3));
@@ -55,14 +83,21 @@ test('FULL STRESS-TEST CORPUS (Block 3 + 4 + 6, 79 scenarios): per-track metrics
   assert.equal(r3.fp, 0, 'Track 3 must have zero false positives on the full stress corpus after the V5-03 fix (V5-02/V5-09 are DELIBERATE, documented, accepted false positives excluded from this count -- see below)');
 });
 
-test('Accepted, documented false positives (V5-02 grace period, V5-09 policy exception) fire as expected -- NOT counted as rule defects', () => {
+test('V5-09 (permanent policy exemption) still fires as an accepted false positive -- NOT a rule defect', () => {
   const rows = loadValidationCorpus();
-  const v502 = rows.find((r) => r.scenario_id === 'V5-02');
   const v509 = rows.find((r) => r.scenario_id === 'V5-09');
-  assert.equal(track3PrimaryFires(v502.events), true, 'V5-02 mechanically fires -- no grace-period field exists in the locked schema to suppress it');
-  assert.equal(v502.expected3, true, 'ground truth reflects the mechanical (accepted-FP) behavior, not a "should be suppressed" wish');
   assert.equal(track3PrimaryFires(v509.events), true, 'V5-09 mechanically fires -- no policy-exception field exists in the locked schema to suppress it');
   assert.equal(v509.expected3, true);
+});
+
+test('V5-02 (scope-downgrade grace period, RECLASSIFIED by the scope-aware correction): now reports insufficient_evidence, not a confirmed accepted false positive', () => {
+  const rows = loadValidationCorpus();
+  const v502 = rows.find((r) => r.scenario_id === 'V5-02');
+  assert.equal(track3PrimaryFires(v502.events), false, 'POST-CORRECTION: no required_scope/removed_scope evidence exists to establish relevance, so this no longer mechanically fires');
+  assert.equal(v502.expected3, false);
+  const { track3Resolution } = require('../detections/oracle');
+  const { coverage } = track3Resolution(v502.events);
+  assert.equal(coverage.insufficientEvidence, 1, 'the one notification must be reported as insufficient_evidence, not silently cleared as evaluated_no_violation');
 });
 
 test('V5-03 (the fixed bug): renewal (scope_upgraded) no longer produces a false positive', () => {
@@ -110,8 +145,9 @@ test('Track 2 required-behavior spot checks across the full validation corpus', 
 test('Track 3 required-behavior spot checks across the full validation corpus', () => {
   const rows = loadValidationCorpus();
   const mustNotFire = [
-    'V5-01', 'V5-04', 'V5-05', 'V5-06', 'V6-01',
-    'V11-07', 'V11-08', 'V11-09',
+    'V5-01', 'V5-02', 'V5-04', 'V5-05', 'V5-06', 'V6-01',
+    'V11-05', 'V11-07', 'V11-08', 'V11-09', 'V11-11',
+    'V12-03', 'V12-06', 'V12-09', 'V12-10', 'V12-11',
   ];
   for (const id of mustNotFire) {
     const r = rows.find((x) => x.scenario_id === id);
@@ -119,7 +155,8 @@ test('Track 3 required-behavior spot checks across the full validation corpus', 
   }
   const mustFire = [
     'V5-07', 'V6-02',
-    'V11-01', 'V11-02', 'V11-03', 'V11-04', 'V11-05', 'V11-06', 'V11-10', 'V11-11',
+    'V11-01', 'V11-02', 'V11-03', 'V11-04', 'V11-06', 'V11-10',
+    'V12-01', 'V12-02', 'V12-04', 'V12-05', 'V12-07', 'V12-08', 'V12-12', 'V12-13',
   ];
   for (const id of mustFire) {
     const r = rows.find((x) => x.scenario_id === id);

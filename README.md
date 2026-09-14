@@ -39,10 +39,18 @@ before deploying anything here.
   executed as native KQL or SPL against a real backend.** See `tests/validation/language_equivalence.test.js`
   and "Native execution" above. A prior version of this test compared one oracle function to
   itself and has been replaced.
-- **Track 3 has one known, explicitly unresolved scope boundary**: a principal holding two or
-  more concurrent subscriptions cannot be disambiguated on the revocation leg, because
-  `mcp.subscription.authorization_change` carries no subscription id at all. See "Operational
-  limitations" and fixture V11-11.
+- **Track 3 now resolves revocation scope to a specific authorization binding, not a principal.**
+  A scope-aware correction added `mcp.authz.binding_id` and
+  `mcp.authz.change.affected_scope`/`affected_binding_ids`/`removed_scope` (all new,
+  project-defined fields — see `telemetry/schema.md`), fixing a genuine category error verified
+  against current MCP/OAuth documentation: principal identity does not establish revocation
+  scope, a scope downgrade does not necessarily remove permission for a given subscription, a
+  wire subscription id is not globally unique, and a grant fingerprint is not a stable
+  identifier. Every Track 3 result is now one of `confirmed_drift` / `evaluated_no_violation` /
+  `insufficient_evidence` — ambiguous or incomplete evidence is reported as such, never defaulted
+  to a confirmed finding. See "Operational limitations", `docs/validation-report.md` "Track 3
+  remediation pass, part 2", and fixture V11-11 (retained, unmodified, as a worked example of
+  legacy telemetry that still cannot be resolved without the new fields).
 - **No claim of proven novelty, and no claim of detections.ai acceptance, is made anywhere in
   this project.** `publication/novelty-check.md` documents a specific research pass, not a
   guarantee that no prior art exists; this project has not been submitted to or accepted by
@@ -117,7 +125,7 @@ result never does.
 3. **Normal corpus** — `data/normal/` (13 scenarios / 106 events)
 4. **Controlled attacks** — `data/attack/` (18 scenarios / 94 events)
 5. **Detection rules** — `detections/` (Sigma, KQL, SPL)
-6. **Validation** — `data/validation/` (48 scenarios / 220 events) + `docs/validation-report.md`
+6. **Validation** — `data/validation/` (61 scenarios / 285 events) + `docs/validation-report.md`
 7. **Publication** — `publication/` (this block)
 
 ## Results
@@ -126,16 +134,19 @@ result never does.
 |---|---|---|
 | Normal (Block 3) | 13 | 106 |
 | Attack/control (Block 4) | 18 | 94 |
-| Validation/stress (Block 6) | 48 | 220 |
-| **Total** | **79** | **420** |
+| Validation/stress (Block 6) | 61 | 285 |
+| **Total** | **92** | **485** |
 
-**118/118 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
+**122/122 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
 tests/detections/*.test.js tests/validation/*.test.js`), fully deterministic on regeneration.
-This count reflects an active Track 3 remediation pass (SPL join-key/max=0 fixes, oracle
+This count reflects two Track 3 remediation passes: (1) SPL join-key/max=0 fixes, oracle
 multi-boundary/independent-leg fixes, a genuine two-model language-equivalence replacement, and
-11 new regression fixtures, V11-01..V11-11) — see `docs/validation-report.md` for the full
-before/after account. Re-run the suite yourself rather than assuming any specific number stays
-fixed across future changes.
+11 regression fixtures (V11-01..V11-11); (2) a scope-aware correction resolving revocation
+scope to a specific authorization binding rather than a principal, adding six new project-defined
+telemetry fields, a three-outcome (`confirmed_drift`/`evaluated_no_violation`/
+`insufficient_evidence`) reporting model, and 13 further regression fixtures (V12-01..V12-13) —
+see `docs/validation-report.md` for the full before/after account. Re-run the suite yourself
+rather than assuming any specific number stays fixed across future changes.
 
 Controlled-corpus precision/recall is 1.000/1.000 for all three tracks under their declared
 prerequisites (see `docs/validation-report.md`, "View 1"). **This is not, and must not be read
@@ -171,14 +182,30 @@ contract, not something a code change here can close).
   independently-coded JS models (one per language's own written semantics) compared row-for-row
   — see `tests/validation/language_equivalence.test.js`. This remains a JS-model comparison, not
   native query execution (see "Validation status and disclosures" above).
-- **[Scope boundary, NOT fixed, reported not resolved] Same-principal, multiple concurrent
+- **[Code defect, FIXED in a second remediation pass] Same-principal, multiple concurrent
   subscriptions on the revocation leg.** `mcp.subscription.authorization_change` carries no
-  subscription id at all, so a principal holding two or more concurrent subscriptions — one
-  revoked, one still legitimately valid — can have the still-valid subscription's notifications
-  incorrectly matched to the other's revocation. Tightening the join to also require
-  `subscription_id` would remove this risk but would reintroduce a different blind spot (a
-  notification missing its own `subscription_id` would no longer correlate at all). See fixture
-  V11-11 and `docs/validation-report.md`.
+  subscription id, and the previous pass's revocation leg treated "same principal" as sufficient
+  scope — verified against current MCP/OAuth documentation to be a genuine category error, not
+  a stylistic one (a principal can hold multiple independent, independently-revocable bindings
+  at once). Fixed by adding `mcp.authz.binding_id` and
+  `mcp.authz.change.affected_scope`/`affected_binding_ids`, which resolve scope to a specific
+  binding without needing a subscription-id field on the change event at all. See fixture
+  V12-13 (the corrected counterpart) and `docs/validation-report.md`, "Track 3 remediation pass,
+  part 2." Fixture V11-11 is retained, unmodified, as a worked example of legacy telemetry
+  (predating the new fields) that still correctly reports `insufficient_evidence` rather than a
+  confirmed or silently-cleared result.
+- **[Deployment prerequisite, new this pass] Track 3's scope-aware correction only helps
+  deployments that emit the new fields.** A deployment that never adds `mcp.authz.binding_id`,
+  `mcp.subscription.required_scope`, or `mcp.authz.change.affected_scope`/`affected_binding_ids`/
+  `removed_scope` gets the safer default (`insufficient_evidence` on genuine ambiguity, instead
+  of the previous pass's unsound principal-only confirm) but not a fully resolved answer. See
+  "Track 3 coverage report" in `docs/validation-report.md` for how often this matters in the
+  test corpus.
+- **[Validation gap, this pass] KQL/SPL approximate binding-candidate timing.** The
+  "was this binding open as of the change's effective time" check is approximated in the query
+  languages as "ever observed for this principal," not precisely interval-bounded — a documented
+  KQL/SPL-only simplification; the JS reference oracle remains precise. See
+  `docs/validation-report.md`, "Track 3 remediation pass, part 2."
 - **[Deployment prerequisite] Collector canonicalization can create Track 1 artifacts.** A
   collector that hashes a Base64-sentinel-encoded routing header without decoding it first will
   manufacture a false conflict for an identical underlying value. Treat
@@ -228,7 +255,7 @@ cd tools/harness && node generate_attacks.js && cd ../..
 # Generate the validation/stress corpus (Block 6)
 cd tools/harness && node generate_validation.js && cd ../..
 
-# Run all tests (118 total; re-run to confirm, do not assume this number)
+# Run all tests (122 total; re-run to confirm, do not assume this number)
 node --test tests/normal/*.test.js tests/attack/*.test.js tests/detections/*.test.js tests/validation/*.test.js
 ```
 
@@ -242,7 +269,7 @@ docs/            threat model, invariants, false-positive analysis, evasion limi
 telemetry/       the locked audit telemetry contract (schema, field mapping, correlation logic)
 data/            normal / attack / validation corpora (JSONL) + manifests + per-corpus READMEs
 tools/harness/   deterministic corpus generators + shared hashing/protocol-validation helpers
-tests/           Node test suites (normal, attack, detections, validation) — 118 tests
+tests/           Node test suites (normal, attack, detections, validation) — 122 tests
 detections/      Sigma / KQL / SPL rules + field-mapping + detection documentation
 publication/     detections.ai / GitHub Sync / Intel Exchange / novelty-check materials (this block)
 ```

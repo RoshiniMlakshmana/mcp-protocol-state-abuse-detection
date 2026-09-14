@@ -2,7 +2,7 @@
 
 Block 6 deliverable. Compiles known benign causes, environmental dependencies, and tuning
 guidance for all three detection tracks, informed by the Block 6 stress-test corpus
-(`data/validation/`, 48 scenarios) and its findings (`docs/validation-report.md`).
+(`data/validation/`, 61 scenarios) and its findings (`docs/validation-report.md`).
 
 This document distinguishes three different things that are easy to conflate:
 - A **rule defect** — the logic itself is wrong given correct inputs. Found once in Block 6
@@ -178,16 +178,21 @@ Any `mcp.authz.reason` other than `principal_mismatch` (`policy_denied`, `insuff
   query executes — but a deployment relying on a short rolling window should be aware of it.
 
 ### Operational false positives — accepted, deployment-specific gaps (documented, deliberately not suppressed; see `docs/validation-report.md` View 2 for the mechanically-computed table)
-- **Grace periods** (V5-02): a notification delivered shortly after a scope downgrade, within a
-  deployment-defined grace window, is mechanically indistinguishable from a real violation,
-  because **no grace-period field exists in the locked Block 2 schema**. Tuning recommendation:
-  apply a per-deployment grace-period constant in the query (`WHERE notif_time > boundary +
-  grace_period`) rather than inventing a new telemetry field.
 - **Permanent policy exemptions** (V5-09): a documented, deployment-specific decision to allow
-  certain already-open streams to continue indefinitely after revocation is likewise invisible
-  to the schema. Tuning recommendation: a deployment-side allowlist (by principal or
-  `policy_version`) applied as a suppression rule downstream of this detection, not encoded
-  into the base query.
+  certain already-open streams to continue indefinitely after revocation is invisible to the
+  schema. Tuning recommendation: a deployment-side allowlist (by principal or `policy_version`)
+  applied as a suppression rule downstream of this detection, not encoded into the base query.
+- **RECLASSIFIED (scope-aware correction, see docs/validation-report.md "Track 3 remediation
+  pass, part 2"): grace periods (V5-02) are no longer an accepted false positive.** A
+  notification delivered shortly after a scope downgrade, within a deployment-defined grace
+  window, previously fired mechanically because no grace-period field exists in the schema. It
+  now correctly reports `insufficient_evidence` instead: this legacy-shaped fixture has neither
+  `mcp.subscription.required_scope` nor `mcp.authz.change.removed_scope`, so relevance genuinely
+  cannot be determined — the honest answer, not a confirmed-but-forgiven violation. A deployment
+  that emits both scope fields gets a definitive `evaluated_no_violation` whenever a downgrade
+  genuinely doesn't touch a given subscription's required scope (fixture V12-03); a *relevant*
+  downgrade a deployment wants to tolerate temporarily still needs deployment-side tuning (no
+  grace-period field exists for that case).
 
 ### Tuning performed in Block 6 (the one confirmed rule defect this project has found)
 **Finding (V5-03):** the original Track 3 logic (Sigma component rule, KQL, SPL, and the shared

@@ -10,7 +10,7 @@
  * Each function below is annotated with the exact rule file(s) it mirrors. Track 3 reuses
  * tests/attack/track3util.js unchanged, rather than re-deriving the same logic a third time.
  */
-const { computeTrack3Verdict, computeTrack3AlertRows } = require('../attack/track3util');
+const { computeTrack3Verdict, computeTrack3AlertRows, computeTrack3Resolution } = require('../attack/track3util');
 
 /**
  * Mirrors: detections/sigma/mcp_task_routing_desynchronization.yml (condition:
@@ -74,6 +74,16 @@ function track3PrimaryAlertRows(events) {
 }
 
 /**
+ * Full three-outcome resolution (confirmed_drift / evaluated_no_violation / insufficient_evidence)
+ * -- see telemetry/correlation.md "Three-outcome reporting". Required whenever a test needs to
+ * distinguish "checked and clean" from "could not be evaluated", which track3PrimaryFires (a
+ * plain boolean) collapses into the same false result.
+ */
+function track3Resolution(events) {
+  return computeTrack3Resolution(events);
+}
+
+/**
  * Mirrors: the Sigma correlation's ACTUAL (non-faithful, documented-limited) behavior --
  * temporal_ordered(authorization_change[authoritative] -> notification) grouped by
  * principal.id_hash, with NO check for an intervening close and NO expiry-only leg. Used only
@@ -94,5 +104,6 @@ function track3SigmaCorrelationFires(events) {
 }
 
 module.exports = {
-  track1PrimaryFires, track1DiagnosticFires, track2Fires, track3PrimaryFires, track3PrimaryAlertRows, track3SigmaCorrelationFires
+  track1PrimaryFires, track1DiagnosticFires, track2Fires, track3PrimaryFires, track3PrimaryAlertRows,
+  track3Resolution, track3SigmaCorrelationFires
 };

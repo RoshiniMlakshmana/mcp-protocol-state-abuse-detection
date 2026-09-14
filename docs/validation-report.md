@@ -15,6 +15,24 @@ revision)" below for the full account; the corpus-size table, View 1/2 metrics, 
 and language-equivalence section further down have all been updated to reflect the fixes and 11
 new regression fixtures (V11-01..V11-11).
 
+**Track 3 remediation pass, part 2 — scope-aware correction (this document's third revision):**
+a second follow-up review found that part 1's fix, while correcting the SPL/KQL divergence and
+the oracle's join-key/multi-boundary bugs, still let the revocation leg treat "same
+`principal.id_hash`" as sufficient to scope a revocation. Verified against current MCP/OAuth
+documentation, that is a genuine category error, not a stylistic one: a principal can hold
+multiple independent, independently-revocable authorization bindings at once, a scope downgrade
+removes specific permissions rather than blanket access, the wire `mcp.subscription.id` is
+connection-scoped rather than globally unique, and a grant fingerprint is not a stable identity
+across a token refresh. See "Track 3 remediation pass, part 2 (scope-aware correction)" below —
+a new section, not a further edit of part 1's section, so both remediation passes remain
+separately auditable. `telemetry/schema.md` and `telemetry/correlation.md` carry the full
+citation trail and the corrected reference algorithm; the corpus-size table, View 1/2 metrics,
+and language-equivalence section have been updated again to reflect six new project-defined
+fields, a three-outcome (`confirmed_drift`/`evaluated_no_violation`/`insufficient_evidence`)
+reporting model, 13 new regression fixtures (V12-01..V12-13), and two deliberate reclassifications
+(V5-02, V11-05, V11-11 — retained, not deleted, and now correctly reported as
+`insufficient_evidence` rather than a confirmed or accepted-false-positive drift).
+
 **Post-hoc audit correction (applied to this document):** an earlier version of this report
 presented a single "full stress-test corpus" precision/recall table showing FP=0 across the
 board, while separately describing V1-08, V5-02, and V5-09 in prose as benign-but-firing
@@ -41,8 +59,8 @@ version fixes that.
 | Block 3 (normal) | 13 | 106 | Negative-test baseline |
 | Block 4 (attack/control) | 18 | 94 | Positive/negative attack-class proof |
 | **Curated core (3+4)** | **31** | **200** | The metrics reported at the end of Block 5 |
-| Block 6 (validation/stress) | 48 | 220 | Adversarial-but-benign + boundary + evasion fixtures, incl. 11 Track 3 remediation-pass regression fixtures (V11-01..V11-11) |
-| **Full stress-test corpus (3+4+6)** | **79** | **420** | This block's metrics |
+| Block 6 (validation/stress) | 61 | 285 | Adversarial-but-benign + boundary + evasion fixtures, incl. 11 join-key/multi-boundary regression fixtures (V11-01..V11-11) and 13 scope-aware-correction fixtures (V12-01..V12-13) |
+| **Full stress-test corpus (3+4+6)** | **92** | **485** | This block's metrics |
 
 All four corpora are deterministic (fixed logical clocks, fixed identifiers, fixed HMAC test
 key) and regenerate byte-for-byte identically. Block 6's corpus lives under `data/validation/`
@@ -102,13 +120,39 @@ alert?"** — that second question is View 2, below.
 | 2 | 5 | 0 | 26 | 0 | 31 | 1.000 | 1.000 |
 | 3 (excl. experimental A-EXP1) | 3 | 0 | 27 | 0 | 30 | 1.000 | 1.000 |
 
-### Full stress-test corpus (79 scenarios) — after the Block 6 fixes and the Track 3 remediation pass
+### Full stress-test corpus (92 scenarios) — after both Track 3 remediation passes
 
 | Track | TP | FP | TN | FN | n | Precision | Recall |
 |---|---|---|---|---|---|---|---|
-| 1 | 8 | 0 | 71 | 0 | 79 | 1.000 | 1.000 |
-| 2 | 9 | 0 | 70 | 0 | 79 | 1.000 | 1.000 |
-| 3 (excl. experimental A-EXP1) | 15 | 0 | 63 | 0 | 78 | 1.000 | 1.000 |
+| 1 | 8 | 0 | 84 | 0 | 92 | 1.000 | 1.000 |
+| 2 | 9 | 0 | 83 | 0 | 92 | 1.000 | 1.000 |
+| 3 (excl. experimental A-EXP1) | 20 | 0 | 71 | 0 | 91 | 1.000 | 1.000 |
+
+**These per-scenario TP/FP/TN/FN numbers collapse `track3PrimaryFires` to a boolean (fired iff
+at least one `confirmed_drift` row exists) — they do NOT show how many notifications were
+evaluable at all.** A scenario counted as a correct "TN" (true negative, expected3=false) is
+indistinguishable in this table from one where every notification came back
+`insufficient_evidence` rather than a positively-confirmed clean result. See "Track 3 coverage
+report" below for that breakdown, computed separately for exactly this reason.
+
+### Track 3 coverage report (part 2 addition) — confirmed / clean / insufficient, reported separately
+
+Computed mechanically by `tests/validation/metrics.test.js`'s coverage test, over every
+notification in the full stress corpus (excluding the experimental A-EXP1 scenario):
+
+| Outcome | Count | Share |
+|---|---|---|
+| `confirmed_drift` | 26 | 49.1% |
+| `evaluated_no_violation` | 20 | 37.7% |
+| `insufficient_evidence` | 7 | 13.2% |
+| **Total evaluated notifications** | **53** | 100% |
+
+`insufficient_evidence` breakdown by reason: `missing_scope_evidence` (2), `no_invalidity_evidence`
+(2), `ambiguous_scope` (1), `conflicting_evidence` (1), `incompatible_hash_epoch` (1). **This
+13.2% is not a defect to be minimized to zero** — it is the correction working as intended: every
+one of these seven notifications previously either mechanically fired (a false positive risk) or
+mechanically cleared (a false negative risk) under principal-only or scope-blind logic, and now
+honestly reports that the telemetry available does not support a confident answer either way.
 
 **These numbers are controlled-corpus implementation-correctness metrics, evaluated under the
 declared prerequisites above. They are NOT real-world precision/recall and must never be cited
@@ -254,11 +298,11 @@ FP or FN relative to the correct implementation):
 | Track 1: missing headers alert as mismatch | 0 / — | 1 / — | Yes |
 | Track 2: any `deny` fires (drops reason check) | 0 / — | 3 / — | Yes |
 | Track 2: any `mcp.task.authorization` event fires (drops decision check) | 0 / — | 19 / — | Yes |
-| Track 3: `detected_at` used instead of `effective_at` | — / 0 | — / 4 | Yes |
-| Track 3: close-suppression check removed | 0 / — | 51 / — | Yes |
-| Track 3: `mcp.authz.change.type` filter removed (reintroduces V5-03) | 0 / — | 52 / — | Yes |
+| Track 3: `detected_at` used instead of `effective_at` | — / 0 | — / 5 | Yes |
+| Track 3: close-suppression check removed | 0 / — | 58 / — | Yes |
+| Track 3: `mcp.authz.change.type` filter removed (reintroduces V5-03) | 0 / — | 59 / — | Yes |
 
-(Counts grew alongside the corpus after the Track 3 remediation pass added 11 regression
+(Counts grew alongside the corpus after the two Track 3 remediation passes added 11 + 13 regression
 fixtures; re-run `node --test tests/validation/mutation.test.js` rather than assuming these
 exact numbers stay fixed across future corpus changes.)
 
@@ -271,23 +315,30 @@ the pre-fix logic and confirms it produces exactly the class of false positive V
 **Correction (Track 3 remediation pass):** the Track 3 "KQL and SPL are mutually equivalent"
 test in a prior revision of this suite called `track3PrimaryFires` twice on the same input and
 asserted the result equal to itself — a tautology that could never fail and verified nothing.
-It has been replaced with two **independently-coded JS models**, one written from KQL's own
-literal semantics (`kqlModelRows`) and one from the corrected SPL's own literal semantics
-(`splModelCorrectedRows`), compared **row-for-row** (not just as a boolean) across the full
-stress corpus. **This disclaimer applies throughout this section: neither model executes actual
-KQL or SPL, and neither runs against a real Sentinel/Splunk backend — "equivalent" means "these
-two independently-authored models of each language's documented semantics agree," which is the
-strongest claim achievable without native execution (still pending; see README.md).**
+It has been replaced with two **independently-coded JS models**, `kqlModelResults` and
+`splModelResults`, each implementing the CORRECTED, scope-aware binding-resolution algorithm
+independently (different data structures, different code shape — see the file's own header
+comment), compared by **outcome per notification** (`confirmed_drift`/`evaluated_no_violation`/
+`insufficient_evidence`, not just a fired/not-fired boolean) across the full stress corpus.
+**This disclaimer applies throughout this section: neither model executes actual KQL or SPL, and
+neither runs against a real Sentinel/Splunk backend — "equivalent" means "these two
+independently-authored models of each language's documented semantics agree," which is the
+strongest claim achievable without native execution (still pending; see README.md).** Both
+models share the same documented simplification as the real KQL/SPL queries: binding-candidate
+membership is approximated as "ever observed for this principal," not precisely
+interval-bounded — see the KQL file's header comment for the full rationale.
 
-A third model, `splModelPreFixBuggyRows`, reconstructs the **original, pre-fix** SPL semantics
-(subscription_id-only expiry join, first-match-only joins) purely to prove the regression corpus
-actually exercises the fixed bugs — see "Track 3 remediation pass" below.
+A third model, `preCorrectionModelResults`, reconstructs the **pre-scope-correction** behavior
+(principal-only join, no binding/scope awareness at all — this is part 1's corrected-but-still-
+principal-scoped model) purely to prove the new regression corpus actually exercises the
+scope-aware correction — it must, and does, diverge from the corrected model on V11-11 and the
+V12 fixtures designed to expose exactly this gap.
 
 | Track | Sigma vs. KQL vs. SPL | Verified how |
 |---|---|---|
-| 1 | Fully equivalent across all 79 stress-corpus scenarios | `tests/validation/language_equivalence.test.js` — three independently-written JS predicates mirroring each language's literal filter, zero disagreements |
-| 2 | Fully equivalent across all 79 stress-corpus scenarios | Same method, zero disagreements |
-| 3 | **The independently-coded KQL-semantics and corrected-SPL-semantics models agree row-for-row across all 79 stress-corpus scenarios. Sigma is NOT equivalent — retained only as a documented, deliberately incomplete correlation.** | Row-level `assert.deepEqual` per scenario, not a boolean comparison; see matrix below for the Sigma comparison |
+| 1 | Fully equivalent across all 92 stress-corpus scenarios | `tests/validation/language_equivalence.test.js` — three independently-written JS predicates mirroring each language's literal filter, zero disagreements |
+| 2 | Fully equivalent across all 92 stress-corpus scenarios | Same method, zero disagreements |
+| 3 | **The independently-coded KQL-model and SPL-model outcomes agree on every notification across all 92 stress-corpus scenarios. Sigma is NOT equivalent — retained only as a documented, deliberately incomplete correlation.** | Per-notification outcome comparison, not a boolean; see matrix below for the Sigma comparison |
 
 ### Track 3 Sigma-vs-authoritative comparison matrix (curated core, non-experimental)
 
@@ -396,31 +447,181 @@ Row-level assertions (exact expected rows, not just fired/not-fired booleans) ar
 would have produced a different (wrong) result on V11-01 and V11-02 — direct evidence that this
 regression suite would catch a reintroduction of either the join-key bug or the one-match bug.
 
-### Scope boundary confirmed, deliberately NOT fixed
+### Scope boundary confirmed in this pass, then ACTUALLY FIXED in part 2 below
 
 **Same-principal, multiple concurrent subscriptions on the revocation leg** (previously listed
-as "remaining risks" item 1 below, based on reasoning alone) is now **empirically demonstrated**
-by fixture V11-11: a principal with two concurrent subscriptions, one revoked, has the *other,
-still-valid* subscription's notification mechanically fire, because
-`mcp.subscription.authorization_change` carries no subscription id to disambiguate. Per explicit
-instruction, this is reported as an unresolved scope boundary, not fixed by tightening the join
-(which would reintroduce the V6-02 blind spot) or by inventing a subscription-id field that does
-not exist in the locked telemetry contract.
+as "remaining risks" item 1 below, based on reasoning alone) was **empirically demonstrated** by
+fixture V11-11 in this pass: a principal with two concurrent subscriptions, one revoked, had the
+*other, still-valid* subscription's notification mechanically fire, because
+`mcp.subscription.authorization_change` carries no subscription id to disambiguate. At the time,
+this was reported as an unresolved scope boundary, correctly not "fixed" by tightening the join
+to `subscription_id` (which would have reintroduced the V6-02 blind spot) or by inventing a
+subscription-id field that does not exist. **This limitation is superseded by "Track 3
+remediation pass, part 2" immediately below**, which adds `mcp.authz.binding_id` and
+`mcp.authz.change.affected_scope`/`affected_binding_ids` — fields that resolve the SAME
+ambiguity without requiring a subscription-id field on `authorization_change` events at all. See
+fixture V12-13 for the corrected counterpart. V11-11 itself is retained, unmodified, as a
+worked example of what a deployment emitting only pre-correction telemetry still cannot resolve.
+
+## Track 3 remediation pass, part 2 (scope-aware correction)
+
+A second follow-up review of Track 3 found that part 1's fix — while correcting the SPL/KQL
+join-key divergence and the oracle's multi-boundary bugs — left the revocation leg's fundamental
+design unchanged: "same `principal.id_hash`" was still being treated as sufficient to scope a
+revocation to a subscription. This section documents the fix. Applied directly to this
+repository, no ZIP/patch workflow, Tracks 1 and 2 untouched.
+
+### The four verified gaps
+
+Each claim below was checked against current, official MCP and OAuth documentation before
+implementation (not assumed):
+
+1. **Principal identity alone does not establish revocation scope.** OAuth token revocation
+   (RFC 7009) scopes revocation to "a particular token"; cascading to related tokens/grants is
+   explicitly a **server-policy choice**, never automatic. A principal can hold multiple
+   independent, independently-revocable bindings at once.
+2. **A scope downgrade does not necessarily remove permission for a given subscription.** MCP's
+   authorization page (`.../basic/authorization`) requires servers to reason about scope
+   hierarchies **per operation** — scope is a set of independent permission strings, not a single
+   on/off switch for an entire grant.
+3. **A wire subscription/request ID is not a globally unique stream incarnation.** MCP's
+   subscriptions pattern (`.../basic/patterns/subscriptions`) defines `mcp.subscription.id` as
+   literally the `subscriptions/listen` request's own JSON-RPC `id` — connection-scoped, and
+   explicitly NOT preserved across a reconnect ("the server holds no subscription state across
+   reconnections").
+4. **An authorization snapshot hash is not automatically a stable grant identifier.** OAuth token
+   refresh (RFC 6749 §6) issues a new token value for what is conventionally the same
+   grant/session — a content fingerprint (`mcp.authz.grant_snapshot_hash`) changes whenever any
+   attribute changes and cannot serve as an identity/join key across a legitimate refresh, scope
+   change, or renewal.
+
+### New project-defined telemetry fields (minimum necessary, see `telemetry/schema.md` §5)
+
+| Field | Event types | Purpose |
+|---|---|---|
+| `mcp.subscription.instance_id` | `.open`, `.acknowledged`, `.notification`, `.close` | The authoritative Track 3 join key — a globally unique stream incarnation, not the connection-scoped wire `mcp.subscription.id` |
+| `mcp.authz.binding_id` | `.open` (required); `.notification` (optional — proof of rebinding) | The stable authorization binding backing an instance, issued by the authorization system itself — never a content fingerprint |
+| `mcp.subscription.required_scope` | `.open` | The scope tag(s) this instance's continued delivery actually depends on |
+| `mcp.authz.change.affected_scope` | `.authorization_change` | `binding` \| `all_principal_bindings` \| `unknown` — the RESOLVED scope of a change; `all_principal_bindings` is the only value permitted to broaden past named bindings |
+| `mcp.authz.change.affected_binding_ids` | `.authorization_change` | The specific binding(s) a `binding`-scoped change invalidates |
+| `mcp.authz.change.removed_scope` | `.authorization_change` | The specific scope tag(s) a `scope_downgraded` change removes, compared against `required_scope` for relevance |
+
+**A pre-existing documentation defect was also fixed**: `telemetry/schema.md` previously listed
+`.authorization_change` among the event types carrying `mcp.subscription.id`, while
+`telemetry/correlation.md` and every actual generator/rule/oracle correctly modeled that event
+as carrying no subscription reference at all. The field table now matches the (always correct)
+implementation.
+
+**Legacy-compatibility fallbacks** (a deployment need not emit all-new fields on day one; see
+`telemetry/schema.md`/`telemetry/correlation.md` for the precise rules): missing `instance_id` →
+`principal_hash + ":" + subscription_id` (principal-scoped, not bare subscription_id — see the
+V11-02 fix below); missing `binding_id` on `.open` → an internal pseudo-binding scoped to
+`(principal_hash, subscription_id)`, usable only when it is the *sole* candidate for that
+principal; missing `affected_scope` → `"unknown"` (sole-candidate fallback only, **never** a
+blanket principal-wide assumption).
+
+### The reference algorithm and three-outcome reporting
+
+Implemented identically (by design — the SPL file is a direct structural port of the KQL file
+for this pass, not an independent re-derivation) in `detections/kql/mcp_subscription_authorization_drift.kql`
+and `detections/spl/mcp_subscription_authorization_drift.spl`, and independently re-implemented
+in `tests/attack/track3util.js` (`computeTrack3Resolution`). Full description:
+`telemetry/correlation.md` "Resolving affected bindings" / "Three-outcome reporting". Summary:
+
+- A `binding`-scoped change applies only to its named `affected_binding_ids`.
+- An `all_principal_bindings`-scoped change applies to every binding observed for that principal
+  — the only path allowed to broaden past a specific binding, and it must be explicit.
+- An `unknown`/legacy change applies via the **sole-candidate fallback**: if exactly one binding
+  is known for that principal, resolve to it (elimination, not a guess); if more than one, report
+  `insufficient_evidence` for all of them; if none, the change produces no finding unless a
+  notification directly and explicitly proves its own matching binding.
+- A `scope_downgraded` change additionally requires `removed_scope` to intersect the instance's
+  `required_scope`; either missing is `insufficient_evidence`, never a default in either
+  direction.
+- Every evaluated notification is checked against the binding it actually carries (or its
+  instance's open-time binding) — never "whatever is currently valid for this principal
+  elsewhere" — so a proven rebinding (a later notification with a new, valid `binding_id`)
+  correctly escapes an old binding's later expiry, while an unrelated new binding existing
+  elsewhere never retroactively clears an old binding's real violation.
+- Every result is exactly one of `confirmed_drift` / `evaluated_no_violation` /
+  `insufficient_evidence` (see "Track 3 coverage report" above).
+
+**Documented KQL/SPL-only simplification**: the "was this binding open as of the change's
+`effective_at`" temporal restriction is approximated as "this binding is ever observed for this
+principal in the queried window," not precisely interval-bounded — expressing arbitrary
+as-of-timestamp interval membership per change event in one set-based query is impractical
+without per-row scalar subqueries. The JS oracle remains the precise authority; this is a KNOWN,
+DOCUMENTED gap, analogous to the pre-existing, documented Sigma limitations for this track.
+
+### A real bug the new regression corpus caught before merge
+
+Building `tests/validation/language_equivalence.test.js`'s two independently-coded KQL/SPL
+models surfaced a genuine defect in the FIRST draft of the `instance_id` legacy fallback: it
+defaulted to the bare `mcp.subscription.id`, which let fixture V11-02 (two different principals
+legitimately reusing the identical wire id) collide onto one synthetic instance, silently
+borrowing one principal's open record for the other's notification. Fixed by scoping the
+fallback to `principal_hash + ":" + subscription_id` in the JS oracle, the KQL file, the SPL
+file, and both schema documents, before this pass was committed — exactly the kind of defect the
+"two independent models must agree" methodology (`docs/validation-report.md`'s own stated
+purpose for Block 6) exists to catch.
+
+### New regression fixtures (V12-01..V12-13)
+
+| ID | Scenario | Outcome |
+|---|---|---|
+| V12-01 | Same principal, A revoked / B allowed | A: `confirmed_drift`; B: `evaluated_no_violation` |
+| V12-02 | Explicit shared-grant revocation, two instances one binding | Both `confirmed_drift` |
+| V12-03 | Unrelated scope removed | `evaluated_no_violation` |
+| V12-04 | Required scope removed | `confirmed_drift` |
+| V12-05 | Same wire id across tenants/reconnects | Revoked tenant: `confirmed_drift`; other: `evaluated_no_violation` |
+| V12-06 | Old binding expires after proven valid replacement | `evaluated_no_violation` |
+| V12-07 | New unrelated authorization doesn't suppress old-binding violation | `confirmed_drift` |
+| V12-08 | Out-of-order arrival, trustworthy effective-time evidence | `confirmed_drift` |
+| V12-09 | Missing scope evidence (downgrade) | `insufficient_evidence` |
+| V12-10 | Conflicting evidence (revoked + scope_upgraded, same binding) | `insufficient_evidence` |
+| V12-11 | Incompatible hash epoch | `insufficient_evidence` |
+| V12-12 | Directly scoped invalidation, no retained open event | `confirmed_drift` |
+| V12-13 | Corrected counterpart to V11-11 | Named binding: `confirmed_drift`; other: `evaluated_no_violation` |
+
+Row-level assertions: `tests/validation/track3_row_regression.test.js`. Two prior fixtures were
+deliberately reclassified rather than deleted or silently excluded:
+
+- **V5-02** (scope-downgrade grace period): previously an "accepted false positive" (mechanically
+  fired, `confirmed_drift`). Now `insufficient_evidence` — no `required_scope`/`removed_scope`
+  evidence exists in this legacy-shaped fixture to establish relevance, so the honest answer is
+  "cannot determine," not "fires but we forgive it."
+- **V11-05** and **V11-11**: retained, event content unmodified, both reclassified from
+  `confirmed_drift` (via the old principal-only join) to `insufficient_evidence` (ambiguous or no
+  known binding). Both remain in the manifest and in every metrics/coverage count — see
+  `tests/validation/metrics.test.js` and the coverage report above.
 
 ## Remaining risks (unresolved, explicitly not decided in this block)
 
-1. **Track 3's principal-only join for the authoritative/detected_only legs** (required to keep
-   V6-02-style malformed telemetry detectable) can, for a principal holding two or more
-   concurrent subscriptions where only one is revoked, cross-correlate the still-valid
-   subscription's notifications against the other's revocation boundary. **Now empirically
-   demonstrated** by fixture V11-11 (Track 3 remediation pass, above) — no longer only a
-   reasoned risk. Deciding whether to tighten the join (trading away the V6-02 fix) remains
-   deferred; doing so would require a subscription-id field on `authorization_change` events
-   that does not exist in the locked telemetry contract, and inventing one is out of scope.
+1. **RESOLVED in "Track 3 remediation pass, part 2" above.** Track 3's principal-only join for
+   the authoritative/detected_only legs (required to keep V6-02-style malformed telemetry
+   detectable) could, for a principal holding two or more concurrent subscriptions where only one
+   is revoked, cross-correlate the still-valid subscription's notifications against the other's
+   revocation boundary — empirically demonstrated by fixture V11-11. This is fixed via
+   `mcp.authz.binding_id` and `mcp.authz.change.affected_scope`/`affected_binding_ids`, which
+   resolve scope without requiring a subscription-id field on `authorization_change` events
+   (V11-11's own shape, which lacks these new fields, correctly remains `insufficient_evidence`
+   rather than either a false confirm or a silently-invented fix — see fixture V12-13 for the
+   resolvable counterpart). **New residual risk introduced by the fix itself**: a deployment that
+   never upgrades its instrumentation to emit the new binding/scope fields gets no benefit from
+   this correction and will continue to see ambiguous-scope notifications reported as
+   `insufficient_evidence` rather than a resolved answer — a deployment prerequisite, not a
+   rule defect (see "Track 3 coverage report").
 2. **Collector canonicalization dependency (V1-08)** has no rule-layer mitigation; only
    upstream instrumentation correctness prevents it.
 3. **Severity-by-`mcp.validation.source` differentiation** for Track 1 remains an open,
    reasonable enhancement, deliberately not implemented this block.
+4. **KQL/SPL binding-candidate temporal approximation** ("Track 3 remediation pass, part 2"
+   above): the sole-candidate fallback and `all_principal_bindings` broadening approximate
+   "was this binding open as of the change's effective_at" as "ever observed for this principal,"
+   not precisely interval-bounded, in the query languages (not in the JS oracle). A deployment
+   relying on native KQL/SPL execution in a scenario with many short-lived, non-overlapping
+   bindings per principal could see this simplification matter; the JS oracle remains the precise
+   reference.
 
 ## Whether Block 1–5 assumptions changed
 
@@ -438,3 +639,17 @@ silently narrowed or widened — the one scope-relevant fact (item (c)) uses tel
 already mandates, and the one scope boundary confirmed as unresolved (multi-subscription
 cross-correlation, V11-11) is reported, not quietly patched over with an invented field or grace
 period.
+
+**Track 3 remediation pass, part 2 (scope-aware correction) is a genuine, disclosed telemetry
+contract change** — unlike part 1, it is not scope-neutral. Six new project-defined fields are
+added (`mcp.subscription.instance_id`, `mcp.authz.binding_id`, `mcp.subscription.required_scope`,
+`mcp.authz.change.affected_scope`/`affected_binding_ids`/`removed_scope`), all clearly marked as
+new and project-defined in `telemetry/schema.md`, none claimed as MCP wire values or OTel/ECS
+standards (`telemetry/field-mapping.md` Bucket 3). No Block 1/2 invariant is removed or
+reinterpreted; every new field is additive, with a documented legacy-compatibility fallback for
+events that predate it, so existing (non-upgraded) instrumentation continues to be evaluated —
+just with `insufficient_evidence` in place of the previous pass's unsound principal-only
+confirms, wherever genuine ambiguity exists. The one documentation defect fixed (removing
+`.authorization_change` from `mcp.subscription.id`'s required-event list in `telemetry/schema.md`)
+corrects the schema to match behavior every implementation already had; it does not change any
+implementation's behavior.
