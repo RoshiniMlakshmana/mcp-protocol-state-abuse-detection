@@ -1,18 +1,20 @@
 # Block 6 — Validation / Stress-Test Corpus
 
-61 scenarios, 285 events. **Not mixed with Block 3 (normal) or Block 4 (attack/control) on
+67 scenarios, 319 events. **Not mixed with Block 3 (normal) or Block 4 (attack/control) on
 disk** — this corpus lives entirely under `data/validation/` and is loaded separately by
 `tests/detections/corpus.js`'s `loadValidationCorpus()`. Includes 11 Track 3 join-key/multi-
-boundary regression fixtures (V11-01..V11-11) and 13 Track 3 scope-aware-correction regression
-fixtures (V12-01..V12-13) added in two later remediation passes — see "Track 3 remediation
-pass" and "Track 3 remediation pass, part 2" below and `docs/validation-report.md`.
+boundary regression fixtures (V11-01..V11-11), 13 Track 3 scope-aware-correction regression
+fixtures (V12-01..V12-13), and 6 Track 3 example-driven regression fixtures (V13-01..V13-06)
+added across three later remediation passes — see "Track 3 remediation pass," "Track 3
+remediation pass, part 2," and "Track 3 remediation pass, part 3" below and
+`docs/validation-report.md`.
 
 **Purpose:** unlike Block 3 (demonstrate normal behavior) and Block 4 (demonstrate the three
 attack classes), this corpus exists to **break the Block 5 detection rules** — adversarial-but-
 benign traffic designed to produce false positives if the rules are weak, boundary conditions
 designed to expose off-by-one/timing bugs, and evasion-documentation fixtures that make blind
 spots concrete and testable rather than just asserted in prose. It found several real defects
-across three remediation rounds (see `docs/validation-report.md`) — that is the corpus doing its
+across four remediation rounds (see `docs/validation-report.md`) — that is the corpus doing its
 job, not a failure of the corpus.
 
 ## Regenerating
@@ -30,7 +32,7 @@ Deterministic (fixed clocks, fixed identifiers, same HMAC test key as Block 3/4)
 |---|---|---|
 | `track1/` | V1 (false positives), V2 (evasion illustration) | V1-01…V1-09, V2-01 |
 | `track2/` | V3 (false positives), V4 (evasion documentation) | V3-01…V3-07, V4-01, V4-02 |
-| `track3/` | V5 (false positives/boundary), V6 (evasion documentation), V11/V12 (two remediation-pass regressions) | V5-01…V5-09, V6-01, V6-02, V11-01…V11-11, V12-01…V12-13 |
+| `track3/` | V5 (false positives/boundary), V6 (evasion documentation), V11/V12/V13 (three remediation-pass regressions) | V5-01…V5-09, V6-01, V6-02, V11-01…V11-11, V12-01…V12-13, V13-01…V13-06 |
 | `enrichment/` | V8 (output/token/schema must never independently drive a verdict) | V8-01…V8-05 |
 | `hashing/` | V7 (HMAC key-epoch behavior) | V7-01…V7-03 |
 
@@ -63,7 +65,10 @@ observability boundary), `notes`.
    and this fix surfaced a **known, unresolved precision/recall tradeoff** in the real rules
    themselves (documented, not fixed): the principal-only join can, in principle, cross-
    correlate a revoked subscription's boundary against a *different*, still-valid subscription
-   held by the same principal.
+   held by the same principal. **Reclassified again in "Track 3 remediation pass, part 3" below**:
+   V6-02's revocation carries no `affected_scope` evidence at all, so under the corrected,
+   no-inference resolver it now correctly reports `insufficient_evidence` rather than
+   `confirmed_drift` — see part 3 and V12-12 for the corrected, explicitly-scoped counterpart.
 3. **V5-09 is deliberately left as an accepted, documented false positive** — no
    policy-exception field exists in the locked Block 2 schema, so the rule correctly (given
    available telemetry) cannot suppress it. Tuning recommendation: a deployment-side allowlist,
@@ -139,6 +144,59 @@ Fixed via six new project-defined fields (`mcp.subscription.instance_id`, `mcp.a
 `confirmed_drift` to `insufficient_evidence` — not deleted, not silently excluded from any
 metrics or coverage count. See `docs/validation-report.md`, "Track 3 remediation pass, part 2"
 and "Track 3 coverage report," and `tests/validation/track3_row_regression.test.js`.
+
+## Track 3 remediation pass, part 3 (V13-01..V13-06) — example-driven regression pass
+
+A third follow-up review worked from ten independently-specified examples (each an expected
+outcome stated before checking the query source) and found that part 2's "scope-aware
+correction" still carried two unsound shortcuts, plus two ordering/detection gaps. Fixed in
+`tests/attack/track3util.js`, both `detections/kql/mcp_subscription_authorization_drift.kql`
+and `detections/spl/mcp_subscription_authorization_drift.spl`, and both independently-coded
+models in `tests/validation/language_equivalence.test.js`:
+
+- **Removed a "sole-candidate" scope inference**: an `affected_scope=unknown`/legacy change was
+  previously resolved to `confirmed_drift` if exactly one candidate binding had been observed
+  for that principal — itself an unsupported inference (a count of observed bindings is not
+  evidence of which binding a change applies to), not merely a documented approximation. It is
+  now removed entirely; `unknown`/legacy scope always reports `insufficient_evidence`
+  (`ambiguous_scope`), regardless of candidate count. **This reclassifies V6-02** (see above).
+- **Replaced an "ever observed" approximation with a precise effective-time interval check**
+  for `affected_scope=all_principal_bindings`: a binding now only counts as covered if it was
+  already open (`open_time <= effective_at`) and not already closed before `effective_at` — not
+  merely "observed somewhere in the window."
+- **Reordered suppression before scope-ambiguity/conflict checks**: a legitimately closed
+  stream is now always resolved to `evaluated_no_violation` before any ambiguity/conflict logic
+  runs, fixing a genuine ordering bug the example-driven pass surfaced (V11-07 regressed to
+  `insufficient_evidence` under the corrected `unknown`-scope rule until this was fixed).
+- **Added explicit detection of self-contradictory timing evidence**: a change claiming
+  `timing_confidence=authoritative` but omitting `effective_at` is now explicitly detected
+  (before any timestamp comparison) and reported as `insufficient_evidence`
+  (`incomplete_timing_evidence`), rather than silently falling out of a null comparison.
+
+Six new fixtures, one per example not already covered by an existing fixture:
+
+- **V13-01**: delivery occurs during an invalid interval before a valid replacement
+  authorization takes effect — confirms drift; a later renewal must not erase it.
+- **V13-02**: an unrelated binding exists (earlier and later) — must not affect the notification
+  under evaluation.
+- **V13-03**: `affected_scope=unknown` with exactly one observed candidate binding — reports
+  `insufficient_evidence`, proving the sole-candidate inference is gone.
+- **V13-04**: a wire `subscription_id`/request id is reused after the stream is reopened — the
+  prior instance's close/revocation must not affect the new instance.
+- **V13-05**: an `authorization_change` claims `timing_confidence=authoritative` but omits
+  `effective_at` — reports `insufficient_evidence` (`incomplete_timing_evidence`), not a silent
+  non-match.
+- **V13-06**: `affected_scope=all_principal_bindings` where the binding was not yet open at
+  `effective_at` — proves the precise interval check, not "ever observed," decides coverage.
+
+Row-level assertions for all six are in `tests/validation/track3_row_regression.test.js`,
+including an `oldBuggySoleCandidateInference` reconstruction of the removed mechanism that is
+shown to disagree with the fixed oracle on V13-03 and V6-02 — direct evidence the regression
+suite would catch reintroduction of the removed inference.
+
+**V6-02 is retained, event content unmodified, and reclassified** from `confirmed_drift` to
+`insufficient_evidence` — not deleted, not silently excluded from any metrics or coverage count.
+See `docs/validation-report.md`, "Track 3 remediation pass, part 3."
 
 ## Safety
 

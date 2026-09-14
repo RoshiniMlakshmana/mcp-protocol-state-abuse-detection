@@ -1,28 +1,27 @@
 'use strict';
 /**
- * Track 3 reference resolver (scope-aware correction). Independently re-implements
- * telemetry/correlation.md's "Resolving affected bindings" algorithm in plain JS, used ONLY by
- * tests to recompute a resolution from raw event fields -- never to echo back the manifest's
- * expected_* labels.
+ * Track 3 reference resolver (scope-aware correction, example-driven regression pass).
+ * Independently re-implements telemetry/correlation.md's "Resolving affected bindings"
+ * algorithm in plain JS, used ONLY by tests to recompute a resolution from raw event fields --
+ * never to echo back the manifest's expected_* labels.
  *
- * SCOPE-AWARE CORRECTION (this pass, see docs/validation-report.md): the previous oracle joined
+ * SCOPE-AWARE CORRECTION (see docs/validation-report.md): a prior version of this oracle joined
  * a principal's authorization_change event to EVERY subscription that principal held, treating
  * "same principal.id_hash" as sufficient to scope a revocation. Verified against current
- * MCP/OAuth documentation, that conflates principal identity with authorization scope:
- *   - A principal can hold multiple independent, independently-revocable bindings at once
- *     (OAuth token revocation, RFC 7009, scopes revocation to "a particular token"; cascading to
- *     related tokens is an explicit server-policy choice, never automatic).
- *   - A scope downgrade removes specific permissions, not blanket access (MCP's authorization
- *     page requires servers to reason about scope per operation).
- *   - The wire mcp.subscription.id is connection-scoped only (MCP's subscriptions pattern: "the
- *     server holds no subscription state across reconnections") -- not a globally unique stream
- *     incarnation.
- *   - mcp.authz.grant_snapshot_hash is a content fingerprint, not a stable identifier (OAuth
- *     token refresh, RFC 6749 SS6, issues a new token value for what is conventionally the same
- *     grant).
+ * MCP/OAuth documentation, that conflates principal identity with authorization scope (see
+ * telemetry/schema.md SS5 for the full citation trail).
  *
- * This resolver NEVER falls back to a principal-only confirmed-drift join. Ambiguous or
- * incomplete evidence produces an explicit `insufficient_evidence` outcome instead.
+ * THIS PASS removes a second, subtler unsound shortcut a prior revision introduced to preserve
+ * legacy test expectations: a "sole-candidate fallback" that resolved an `unknown`-scope change
+ * to a confirmed finding whenever exactly one binding was observed for that principal. THAT IS
+ * STILL AN INFERENCE, not evidence -- an authorization server that does not report which binding
+ * a change affects has not told us it affects "the only one we happen to know about." This
+ * resolver now NEVER resolves `affected_scope = unknown` (or a legacy event lacking the field)
+ * to anything but `insufficient_evidence`, regardless of how many candidate bindings exist --
+ * including exactly one. Only two things can confirm a violation's scope: (a) `affected_scope =
+ * binding` explicitly naming the notification's own binding, or (b) `affected_scope =
+ * all_principal_bindings` (an explicit, authoritative claim that covers every binding by
+ * definition, not an inference from what we happen to have observed).
  */
 const INVALIDATING_CHANGE_TYPES = new Set(['revoked', 'expired', 'scope_downgraded']);
 
@@ -32,12 +31,9 @@ function legacyBindingId(principalHash, subId) {
 
 // Legacy-compatibility fallback (telemetry/schema.md): an event lacking mcp.subscription.id
 // gets instance_id = principal_hash + ":" + subscription_id, NOT bare subscription_id -- two
-// different principals legitimately reusing the identical wire subscription_id (fixture V11-02)
-// would otherwise collide onto the same instance_id, silently borrowing one principal's open
-// record (bindingId/requiredScope/validUntil) for another's notification. Scoping the fallback
-// by principal_hash as well fixes that while leaving every single-subscription-per-principal
-// legacy fixture's join key unchanged (same principal + same subId => same fallback value as
-// before).
+// different principals legitimately reusing the identical wire subscription_id would otherwise
+// collide onto the same instance_id, silently borrowing one principal's open record for
+// another's notification.
 function resolveInstanceId(evt) {
   if (evt['mcp.subscription.instance_id'] !== undefined) return evt['mcp.subscription.instance_id'];
   return `${evt['principal.id_hash']}:${evt['mcp.subscription.id']}`;
@@ -100,25 +96,6 @@ function computeTrack3Resolution(events) {
       keyId: e['security.hash.key_id'],
     }));
 
-  // Every binding known for a principal that was open (not yet closed) at or before `atTime`,
-  // from either a retained .open event or an earlier proven-rebinding .notification.
-  function candidateBindingsForPrincipal(principalHash, atTime) {
-    const seen = new Map();
-    for (const o of opens) {
-      if (o.principalHash !== principalHash || o.openTime > atTime) continue;
-      const closedBefore = closes.some((c) => c.instanceId === o.instanceId && c.principalHash === principalHash && c.closeTime <= atTime);
-      if (closedBefore) continue;
-      if (!seen.has(o.bindingId)) seen.set(o.bindingId, o.bindingId);
-    }
-    for (const n of notifications) {
-      if (n.principalHash !== principalHash || !n.ownBindingId || n.notifTime > atTime) continue;
-      const closedBefore = closes.some((c) => c.instanceId === n.instanceId && c.principalHash === principalHash && c.closeTime <= atTime);
-      if (closedBefore) continue;
-      if (!seen.has(n.ownBindingId)) seen.set(n.ownBindingId, n.ownBindingId);
-    }
-    return [...seen.values()];
-  }
-
   // Conflicting-evidence pre-pass: a binding named as invalidated by one authoritative change and
   // ALSO named as scope_upgraded by another authoritative change cannot be resolved by picking a
   // side -- a revoked binding legitimately receiving further grants is a data-quality conflict,
@@ -133,20 +110,25 @@ function computeTrack3Resolution(events) {
   const conflictedBindingIds = new Set([...invalidatedBindingIds].filter((id) => upgradedBindingIds.has(id)));
 
   // Does change `c` apply to a notification whose resolved binding is `effectiveBindingId`
-  // (undefined if genuinely unknown)? Returns { applies: true|false|'ambiguous', ambiguousIds? }.
-  function changeApplies(c, effectiveBindingId) {
-    if (c.affectedScope === 'all_principal_bindings') return { applies: true };
+  // (undefined if genuinely unknown)? Returns 'yes' | 'no' | 'ambiguous'. NEVER infers from how
+  // many bindings happen to be observed -- see the file header for why that was removed.
+  // `bindingOpenTime`/`bindingClosedBeforeEffectiveAt` give `all_principal_bindings` a PRECISE
+  // effective-time interval check (replacing an earlier "ever observed anywhere in the queried
+  // window" approximation): a binding that did not yet exist, or was already closed, at the
+  // moment the change took effect was never one of "all bindings this principal held" then.
+  function changeApplies(c, effectiveBindingId, bindingOpenTime, bindingClosedBeforeEffectiveAt) {
+    if (c.affectedScope === 'all_principal_bindings') {
+      if (bindingOpenTime !== undefined && bindingOpenTime > c.effectiveAt) return 'no'; // didn't exist yet
+      if (bindingClosedBeforeEffectiveAt) return 'no'; // already closed by then
+      return 'yes';
+    }
     if (c.affectedScope === 'binding') {
-      return { applies: effectiveBindingId !== undefined && c.affectedBindingIds.includes(effectiveBindingId) };
+      if (effectiveBindingId === undefined) return 'ambiguous'; // named bindings exist, but we don't know which (if any) this notification's own binding is
+      return c.affectedBindingIds.includes(effectiveBindingId) ? 'yes' : 'no';
     }
-    // 'unknown' (or a legacy event predating the field): sole-candidate fallback only.
-    const candidates = candidateBindingsForPrincipal(c.principalHash, c.effectiveAt || c.detectedAt);
-    if (candidates.length === 0) return { applies: false };
-    if (candidates.length === 1) {
-      const only = candidates[0];
-      return { applies: effectiveBindingId === undefined || effectiveBindingId === only, resolvedBindingId: only };
-    }
-    return { applies: 'ambiguous', ambiguousIds: candidates };
+    // 'unknown' (absent, or a legacy event predating the field): the scope is genuinely
+    // unresolvable from this record alone, REGARDLESS of candidate count.
+    return 'ambiguous';
   }
 
   const results = [];
@@ -182,7 +164,10 @@ function computeTrack3Resolution(events) {
         } else evaluatedNoViolation = true;
       }
 
-      // Leg B: authoritative revocation / scope downgrade -- binding-scoped.
+      // Leg B: authoritative revocation / scope downgrade -- binding-scoped. Timing is checked
+      // BEFORE scope resolution: a change whose effective_at hasn't even been reached yet by
+      // this notification cannot be a violation regardless of scope, so scope ambiguity is only
+      // surfaced when it would actually matter.
       for (const c of changes) {
         if (c.principalHash !== n.principalHash) continue;
         if (c.keyId && n.keyId && c.keyId !== n.keyId) { insufficientReason = insufficientReason || 'incompatible_hash_epoch'; continue; }
@@ -191,37 +176,41 @@ function computeTrack3Resolution(events) {
           if (n.notifTime > c.detectedAt) insufficientReason = insufficientReason || 'timing_unconfirmed';
           continue;
         }
+        if (c.effectiveAt === undefined || c.effectiveAt === null) {
+          // Self-contradictory record: claims authoritative timing but carries no effective_at
+          // at all. This is incomplete evidence, not "does not apply".
+          insufficientReason = insufficientReason || 'incomplete_timing_evidence';
+          continue;
+        }
+        if (!(n.notifTime > c.effectiveAt)) { evaluatedNoViolation = true; continue; }
+
+        // A legitimately closed stream needs no scope resolution at all -- suppression is
+        // checked BEFORE scope ambiguity, since "the subscriber already stopped receiving
+        // notifications through the proper channel" is a definitive answer regardless of which
+        // binding the revocation targeted.
+        if (suppressed) { evaluatedNoViolation = true; continue; }
+
         if (effectiveBindingId !== undefined && conflictedBindingIds.has(effectiveBindingId)) {
           insufficientReason = insufficientReason || 'conflicting_evidence';
           continue;
         }
-        const resolved = changeApplies(c, effectiveBindingId);
-        if (resolved.applies === 'ambiguous') {
-          if (effectiveBindingId === undefined || resolved.ambiguousIds.includes(effectiveBindingId)) {
-            insufficientReason = insufficientReason || 'ambiguous_scope';
-          }
-          continue;
-        }
-        if (!resolved.applies) continue;
+        const bindingClosedBeforeEffectiveAt = closes.some((cl) => cl.instanceId === n.instanceId && cl.principalHash === n.principalHash && cl.closeTime <= c.effectiveAt);
+        const applies = changeApplies(c, effectiveBindingId, open ? open.openTime : undefined, bindingClosedBeforeEffectiveAt);
+        if (applies === 'ambiguous') { insufficientReason = insufficientReason || 'ambiguous_scope'; continue; }
+        if (applies === 'no') continue;
 
         if (c.type === 'scope_downgraded') {
           if (!requiredScope || !c.removedScope) { insufficientReason = insufficientReason || 'missing_scope_evidence'; continue; }
           if (!c.removedScope.some((s) => requiredScope.includes(s))) { evaluatedNoViolation = true; continue; }
         }
 
-        if (n.notifTime > c.effectiveAt) {
-          if (suppressed) evaluatedNoViolation = true;
-          else {
-            results.push({
-              instanceId: n.instanceId, subscriptionId: n.subId, principalHash: n.principalHash,
-              notifTime: n.notifTime, notificationType: n.notificationType, outcome: 'confirmed_drift',
-              boundary: 'effective_at', boundaryTime: c.effectiveAt,
-              bindingId: resolved.resolvedBindingId || effectiveBindingId,
-              changeType: c.type, changeSource: c.source,
-            });
-            confirmedAny = true;
-          }
-        } else evaluatedNoViolation = true;
+        results.push({
+          instanceId: n.instanceId, subscriptionId: n.subId, principalHash: n.principalHash,
+          notifTime: n.notifTime, notificationType: n.notificationType, outcome: 'confirmed_drift',
+          boundary: 'effective_at', boundaryTime: c.effectiveAt, bindingId: effectiveBindingId,
+          changeType: c.type, changeSource: c.source,
+        });
+        confirmedAny = true;
       }
     }
 

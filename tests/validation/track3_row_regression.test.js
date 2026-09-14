@@ -90,7 +90,7 @@ test('V11-05 (RECLASSIFIED, ambiguous legacy telemetry): no retained open event 
   const { results, coverage } = track3Resolution(events);
   assert.equal(coverage.insufficientEvidence, 1);
   assert.equal(results[0].outcome, 'insufficient_evidence');
-  assert.equal(results[0].reason, 'no_invalidity_evidence', 'zero known bindings for this principal and no directly-scoped evidence on the notification itself');
+  assert.equal(results[0].reason, 'ambiguous_scope', 'the revocation timing crosses, but its scope is unknown (legacy shape) -- never inferred from candidate count, per example #6');
 });
 
 test('V11-06: a close on a DIFFERENT subscription_id (same principal) does not suppress the still-open one', () => {
@@ -145,11 +145,73 @@ test('V12-13: the corrected counterpart to V11-11 -- explicit affected_binding_i
 });
 
 // ---------------------------------------------------------------------------------------------
-// Proof that these regression tests actually catch a reintroduction of the two named bugs:
-// join-key restoration (subscription_id-only close/expiry join) and one-match (Splunk max=1
-// default) behavior. Re-derives the OLD, buggy behavior independently here (not by importing
-// computeTrack3AlertRows and disabling a flag), then shows it disagrees with the fixed oracle's
-// rows on the exact fixtures designed to expose each bug.
+// Example-driven regression tests (this pass) -- see docs/validation-report.md "Track 3
+// remediation pass, part 3" for the ten independently-specified examples these instantiate.
+// ---------------------------------------------------------------------------------------------
+
+test('V13-01 (EXAMPLE #4): confirmed drift during a genuinely invalid interval survives a later, unrelated renewal', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const events = byId('V13-01').events;
+  const { results } = track3Resolution(events);
+  const first = results.find((r) => r.notifTime === '2026-10-03T09:10:00.000Z');
+  const second = results.find((r) => r.notifTime === '2026-10-03T09:20:00.000Z');
+  assert.ok(first, 'the first notification must produce a result');
+  assert.equal(first.outcome, 'confirmed_drift');
+  assert.ok(second, 'the second (later, rebound) notification must produce a result');
+  assert.equal(second.outcome, 'evaluated_no_violation', 'proven rebinding to a new, valid binding clears the later notification');
+  // The critical assertion: the SECOND, clean notification's evaluation must not have altered
+  // the FIRST notification's already-computed outcome (each is independent).
+  assert.equal(first.outcome, 'confirmed_drift', 'the later renewal must not retroactively erase the earlier confirmed finding');
+});
+
+test('V13-02 (EXAMPLE #5, earlier direction): a binding revoked BEFORE the tested subscription even opened must not affect it', () => {
+  const rows = highRows(byId('V13-02').events);
+  assert.deepEqual(rows, [], 'the earlier, unrelated, explicitly-named binding revocation must not leak into the later, different binding');
+});
+
+test('V13-03 (EXAMPLE #6): unknown scope with exactly ONE observed candidate still reports insufficient_evidence, never confirmed_drift', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const events = byId('V13-03').events;
+  assert.equal(events.filter((e) => e['event.name'] === 'mcp.subscription.open').length, 1, 'fixture must have exactly one subscription/candidate for this principal');
+  const { results, coverage } = track3Resolution(events);
+  assert.equal(coverage.confirmedDrift, 0, 'candidate count of exactly one must never substitute for scope evidence');
+  assert.equal(coverage.insufficientEvidence, 1);
+  assert.equal(results[0].reason, 'ambiguous_scope');
+});
+
+test('V13-04 (EXAMPLE #9, same-principal reopen): a revocation on the OLD instance must not affect the NEW instance after a wire-id reopen', () => {
+  const rows = highRows(byId('V13-04').events);
+  assert.deepEqual(rows, [], 'the new instance (new instance_id, new binding) is unaffected by the old instance\'s revocation, despite reusing the same wire subscription_id');
+});
+
+test('V13-05 (EXAMPLE #10, timing-specific): "authoritative" timing with no effective_at is incomplete evidence, not silently "does not apply"', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const events = byId('V13-05').events;
+  const { results, coverage } = track3Resolution(events);
+  assert.equal(coverage.confirmedDrift, 0);
+  assert.equal(coverage.insufficientEvidence, 1);
+  assert.equal(results[0].reason, 'incomplete_timing_evidence');
+});
+
+test('V13-06 (precise effective-time interval): an all_principal_bindings revocation confirms on the pre-existing binding, but not on a binding issued afterward', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const events = byId('V13-06').events;
+  const { results } = track3Resolution(events);
+  const confirmed = results.filter((r) => r.outcome === 'confirmed_drift');
+  const noViolation = results.filter((r) => r.outcome === 'evaluated_no_violation');
+  assert.equal(confirmed.length, 1, 'only the pre-existing binding, open at effective_at, confirms');
+  assert.equal(confirmed[0].subscriptionId, '30008');
+  assert.equal(noViolation.length, 1, 'the binding issued AFTER effective_at is definitively cleared, not confirmed');
+  assert.equal(noViolation[0].subscriptionId, '30009');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Proof that these regression tests actually catch a reintroduction of THREE named bugs:
+// join-key restoration (subscription_id-only close/expiry join), one-match (Splunk max=1
+// default) behavior, and the sole-candidate scope inference removed in this pass. Re-derives
+// each OLD, buggy behavior independently here (not by importing computeTrack3AlertRows and
+// disabling a flag), then shows it disagrees with the fixed oracle's rows on the exact fixtures
+// designed to expose each bug.
 // ---------------------------------------------------------------------------------------------
 
 function oldBuggyCloseSuppressed(events, notif) {
@@ -195,4 +257,34 @@ test('RESTORED-BUG PROOF: a max=1-style first-match-only join would silently dro
   // have kept only ONE of them -- silently dropping the other applicable boundary.
   const buggyRows = oldBuggyOneMatchOnly(events, n2);
   assert.equal(buggyRows.length, 1, 'pre-fix bug: max=1-style behavior keeps only the first matching change, not both');
+});
+
+function oldBuggySoleCandidateInference(events, notif) {
+  // PRE-FIX (this pass): an `unknown`-scope change was resolved to a confirmed finding whenever
+  // exactly ONE binding was observable for that principal -- independently re-derived here, not
+  // imported from the (now-corrected) resolver.
+  const opens = events.filter((e) => e['event.name'] === 'mcp.subscription.open' && e['principal.id_hash'] === notif['principal.id_hash']);
+  const changes = events.filter((e) =>
+    e['event.name'] === 'mcp.subscription.authorization_change' &&
+    e['principal.id_hash'] === notif['principal.id_hash'] &&
+    e['mcp.authz.change.timing_confidence'] === 'authoritative' &&
+    e['mcp.authz.change.effective_at'] &&
+    ['revoked', 'expired', 'scope_downgraded'].includes(e['mcp.authz.change.type']) &&
+    !e['mcp.authz.change.affected_scope'] // legacy/unknown scope only
+  );
+  if (opens.length !== 1) return false; // the old inference only ever applied for exactly one candidate
+  return changes.some((c) => notif.timestamp > c['mcp.authz.change.effective_at']);
+}
+
+test('RESTORED-BUG PROOF: a sole-candidate scope inference would wrongly confirm V13-03 and V6-02, both now correctly insufficient_evidence', () => {
+  for (const id of ['V13-03', 'V6-02']) {
+    const events = byId(id).events;
+    const notif = events.find((e) => e['event.name'] === 'mcp.subscription.notification');
+    assert.ok(notif, `${id} must have a notification`);
+    // The FIXED resolver never confirms via candidate-count inference:
+    const fixedRows = highRows(events);
+    assert.equal(fixedRows.length, 0, `${id}: fixed behavior reports no confirmed_drift row`);
+    // The OLD, removed sole-candidate inference WOULD have confirmed it:
+    assert.equal(oldBuggySoleCandidateInference(events, notif), true, `${id}: pre-fix sole-candidate inference would have wrongly confirmed this`);
+  }
 });

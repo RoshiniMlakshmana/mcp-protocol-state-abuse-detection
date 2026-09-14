@@ -2,7 +2,7 @@
 
 Block 6 deliverable. Compiles known benign causes, environmental dependencies, and tuning
 guidance for all three detection tracks, informed by the Block 6 stress-test corpus
-(`data/validation/`, 61 scenarios) and its findings (`docs/validation-report.md`).
+(`data/validation/`, 67 scenarios) and its findings (`docs/validation-report.md`).
 
 This document distinguishes three different things that are easy to conflate:
 - A **rule defect** — the logic itself is wrong given correct inputs. Found once in Block 6
@@ -228,11 +228,26 @@ timestamp, and confirmation that no `mcp.subscription.close` exists at or before
 ### Known blind spots (see `docs/evasion-limitations.md` for the adversarial framing)
 - No invalidity evidence at all (no `authorization_change` event, no `valid_until`) — not
   detectable by construction (V6-01).
-- A notification missing `mcp.subscription.id` still correlates via the principal-scoped join
-  used for the revocation leg (V6-02) — but this same principal-only join is a **known,
-  currently unresolved precision risk**: a principal holding two or more concurrent
-  subscriptions, one revoked and one still legitimately valid, could have the still-valid
-  subscription's notifications incorrectly matched against the other's revocation boundary.
-  Tightening the join to also require `mcp.subscription.id` would remove that risk but would
-  reintroduce the V6-02 blind spot for malformed telemetry. **This tradeoff is reported, not
-  resolved, in this block** — see `docs/validation-report.md`, "remaining risks."
+- **RECLASSIFIED (example-driven regression pass, see docs/validation-report.md "Track 3
+  remediation pass, part 3"): V6-02 no longer reports a partial detection.** The earlier
+  write-up here described a notification missing `mcp.subscription.id` as still correlating via
+  the principal-scoped join used for the revocation leg, with a **known, unresolved precision
+  risk**: a principal holding two or more concurrent subscriptions, one revoked and one still
+  legitimately valid, could have the still-valid subscription's notifications incorrectly
+  matched against the other's revocation boundary (empirically confirmed by V11-11). That
+  description is now stale on two counts:
+  - The revocation leg no longer confirms drift on `affected_scope=unknown`/legacy evidence
+    (V6-02's case) purely because only one candidate binding was ever observed for the
+    principal — that "sole-candidate" inference was itself unsound and has been removed.
+    V6-02 now correctly reports `insufficient_evidence` (`ambiguous_scope`), not a match.
+  - The cross-subscription correlation risk V11-11 demonstrated is resolved whenever the
+    revocation event carries `mcp.authz.change.affected_binding_ids` (V12-13, the corrected
+    counterpart to V11-11, resolves cleanly to the intended binding only). It remains a
+    real risk only in the degenerate case explored by V11-11 itself — explicit `binding` scope
+    naming the wrong binding, or scope evidence altogether absent — and that degenerate case
+    now surfaces as `insufficient_evidence` rather than a wrong `confirmed_drift`, since
+    `unknown`/legacy scope is never inferred. Net effect: this class of false positive is
+    resolved for any deployment emitting binding-scoped revocation evidence; a deployment
+    with no scope evidence at all trades the old (wrong) confirmation for a correct
+    `insufficient_evidence`, not a silent miss. See `docs/validation-report.md`, "Track 3
+    remediation pass, part 3."

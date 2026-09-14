@@ -14,7 +14,7 @@ const REQUIRED_FIELDS = [
 test('Every Block 6 validation scenario has all required ground-truth fields', () => {
   const manifestPath = path.join(__dirname, '..', '..', 'data', 'validation', 'manifest.jsonl');
   const rows = fs.readFileSync(manifestPath, 'utf8').trim().split('\n').map(JSON.parse);
-  assert.equal(rows.length, 61);
+  assert.equal(rows.length, 67);
   const ids = rows.map((r) => r.scenario_id);
   assert.equal(new Set(ids).size, ids.length, 'no duplicate scenario_id');
   for (const row of rows) {
@@ -33,7 +33,7 @@ test('Every declared false_positive_test or evasion_test scenario carries a non-
       assert.ok(row.purpose && row.purpose.length > 20, `${row.scenario_id}: needs a substantive purpose`);
     }
   }
-  assert.equal(rows.length, 61);
+  assert.equal(rows.length, 67);
 });
 
 test('Every evasion_test scenario is classified in its notes/telemetry_limitation as detectable/partially/not detectable', () => {

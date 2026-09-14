@@ -48,9 +48,12 @@ before deploying anything here.
   wire subscription id is not globally unique, and a grant fingerprint is not a stable
   identifier. Every Track 3 result is now one of `confirmed_drift` / `evaluated_no_violation` /
   `insufficient_evidence` — ambiguous or incomplete evidence is reported as such, never defaulted
-  to a confirmed finding. See "Operational limitations", `docs/validation-report.md` "Track 3
-  remediation pass, part 2", and fixture V11-11 (retained, unmodified, as a worked example of
-  legacy telemetry that still cannot be resolved without the new fields).
+  to a confirmed finding. A follow-up example-driven pass then removed a subtler unsound
+  shortcut (a "sole-candidate fallback" that resolved unknown-scope changes via candidate count)
+  and replaced an "ever observed" approximation with a precise effective-time interval check for
+  account-wide revocations. See "Operational limitations", `docs/validation-report.md` "Track 3
+  remediation pass, part 2" and "part 3", and fixture V11-11 (retained, unmodified, as a worked
+  example of legacy telemetry that still cannot be resolved without the new fields).
 - **No claim of proven novelty, and no claim of detections.ai acceptance, is made anywhere in
   this project.** `publication/novelty-check.md` documents a specific research pass, not a
   guarantee that no prior art exists; this project has not been submitted to or accepted by
@@ -125,7 +128,7 @@ result never does.
 3. **Normal corpus** — `data/normal/` (13 scenarios / 106 events)
 4. **Controlled attacks** — `data/attack/` (18 scenarios / 94 events)
 5. **Detection rules** — `detections/` (Sigma, KQL, SPL)
-6. **Validation** — `data/validation/` (61 scenarios / 285 events) + `docs/validation-report.md`
+6. **Validation** — `data/validation/` (67 scenarios / 319 events) + `docs/validation-report.md`
 7. **Publication** — `publication/` (this block)
 
 ## Results
@@ -134,19 +137,23 @@ result never does.
 |---|---|---|
 | Normal (Block 3) | 13 | 106 |
 | Attack/control (Block 4) | 18 | 94 |
-| Validation/stress (Block 6) | 61 | 285 |
-| **Total** | **92** | **485** |
+| Validation/stress (Block 6) | 67 | 319 |
+| **Total** | **98** | **519** |
 
-**122/122 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
+**129/129 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
 tests/detections/*.test.js tests/validation/*.test.js`), fully deterministic on regeneration.
-This count reflects two Track 3 remediation passes: (1) SPL join-key/max=0 fixes, oracle
+This count reflects three Track 3 remediation passes: (1) SPL join-key/max=0 fixes, oracle
 multi-boundary/independent-leg fixes, a genuine two-model language-equivalence replacement, and
 11 regression fixtures (V11-01..V11-11); (2) a scope-aware correction resolving revocation
 scope to a specific authorization binding rather than a principal, adding six new project-defined
 telemetry fields, a three-outcome (`confirmed_drift`/`evaluated_no_violation`/
-`insufficient_evidence`) reporting model, and 13 further regression fixtures (V12-01..V12-13) —
-see `docs/validation-report.md` for the full before/after account. Re-run the suite yourself
-rather than assuming any specific number stays fixed across future changes.
+`insufficient_evidence`) reporting model, and 13 further regression fixtures (V12-01..V12-13);
+(3) an example-driven regression pass built from ten independently-specified examples, which
+removed a subtler unsound "sole-candidate" scope inference part 2 still carried, replaced an
+"ever observed" approximation with a precise effective-time interval check, and added 6 further
+fixtures (V13-01..V13-06) — see `docs/validation-report.md` for the full before/after account.
+Re-run the suite yourself rather than assuming any specific number stays fixed across future
+changes.
 
 Controlled-corpus precision/recall is 1.000/1.000 for all three tracks under their declared
 prerequisites (see `docs/validation-report.md`, "View 1"). **This is not, and must not be read
@@ -201,11 +208,25 @@ contract, not something a code change here can close).
   of the previous pass's unsound principal-only confirm) but not a fully resolved answer. See
   "Track 3 coverage report" in `docs/validation-report.md` for how often this matters in the
   test corpus.
-- **[Validation gap, this pass] KQL/SPL approximate binding-candidate timing.** The
-  "was this binding open as of the change's effective time" check is approximated in the query
-  languages as "ever observed for this principal," not precisely interval-bounded — a documented
-  KQL/SPL-only simplification; the JS reference oracle remains precise. See
-  `docs/validation-report.md`, "Track 3 remediation pass, part 2."
+- **[Code defects, FIXED in a third remediation pass] A "sole-candidate" scope inference and an
+  "ever observed" timing approximation are both removed.** Part 2's own fix still resolved an
+  `affected_scope = unknown` change to a confirmed finding whenever exactly one binding was
+  observed for a principal — still an inference, not evidence (fixture V13-03 proves this must
+  never happen, even at a candidate count of exactly one). It also approximated
+  `affected_scope = all_principal_bindings` as "ever observed anywhere in the queried window"
+  rather than a precise effective-time interval (fixture V13-06: a binding issued after an
+  account-wide revocation must not be swept up by it). Both are fixed in KQL, SPL, and the JS
+  oracle. See `docs/validation-report.md`, "Track 3 remediation pass, part 3."
+- **[Code defect, FIXED] Suppression is now checked before scope ambiguity/conflict.** A
+  legitimately closed stream needs no scope resolution at all; this was reordered in the JS
+  oracle and both query files after being caught while re-deriving fixture V11-07 under the
+  stricter unknown-scope rule.
+- **[Code defect, FIXED] A self-contradictory record (authoritative timing claimed, no
+  `effective_at`) is now explicitly detected** and reported as `insufficient_evidence`
+  (`incomplete_timing_evidence`) rather than silently disappearing behind a null-timestamp
+  comparison. A real instance of this exact gap was found and fixed in the KQL query itself
+  during this pass, not merely documented — see `docs/validation-report.md`, "Track 3
+  remediation pass, part 3," "One exact unresolved case identified, not approximated."
 - **[Deployment prerequisite] Collector canonicalization can create Track 1 artifacts.** A
   collector that hashes a Base64-sentinel-encoded routing header without decoding it first will
   manufacture a false conflict for an identical underlying value. Treat
@@ -269,7 +290,7 @@ docs/            threat model, invariants, false-positive analysis, evasion limi
 telemetry/       the locked audit telemetry contract (schema, field mapping, correlation logic)
 data/            normal / attack / validation corpora (JSONL) + manifests + per-corpus READMEs
 tools/harness/   deterministic corpus generators + shared hashing/protocol-validation helpers
-tests/           Node test suites (normal, attack, detections, validation) — 122 tests
+tests/           Node test suites (normal, attack, detections, validation) — 129 tests
 detections/      Sigma / KQL / SPL rules + field-mapping + detection documentation
 publication/     detections.ai / GitHub Sync / Intel Exchange / novelty-check materials (this block)
 ```

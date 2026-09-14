@@ -785,14 +785,16 @@ function t3_largeDetectedEffectiveGap() {
   const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
   const evts = [];
   const p = hmacHash('principal:alice-v5-07');
-  sub(evts, clock, ctx, { subId: '5007', principalHash: p, validUntil: '2026-10-01T16:00:00.000Z' });
+  const binding = 'binding:v5-07';
+  sub(evts, clock, ctx, { subId: '5007', principalHash: p, bindingId: binding, validUntil: '2026-10-01T16:00:00.000Z' });
   clock.t = Date.parse('2026-10-01T12:25:00.000Z');
   notify(evts, clock, ctx, { subId: '5007', principalHash: p, uriHash: hmacHash('resource:v5-07') });
   // effective_at is only 5 minutes after open, but detected_at is a full 2 HOURS later --
   // authoritative timing must still be trusted regardless of how large this gap is.
   change(evts, clock, ctx, {
     principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T12:22:00.000Z',
-    detectedAt: '2026-10-01T14:20:00.000Z', confidence: 'authoritative'
+    detectedAt: '2026-10-01T14:20:00.000Z', confidence: 'authoritative',
+    affectedScope: 'binding', affectedBindingIds: [binding]
   });
   corpus.pushAll(file, evts);
   record({
@@ -809,10 +811,11 @@ function t3_policyPermitsOpenStreams() {
   const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
   const evts = [];
   const p = hmacHash('principal:alice-v5-09');
-  sub(evts, clock, ctx, { subId: '5009', principalHash: p, validUntil: '2026-10-01T14:00:00.000Z' });
+  const binding = 'binding:v5-09';
+  sub(evts, clock, ctx, { subId: '5009', principalHash: p, bindingId: binding, validUntil: '2026-10-01T14:00:00.000Z' });
   clock.t = Date.parse('2026-10-01T12:35:00.000Z');
   const effAt = clock.iso();
-  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: effAt, detectedAt: effAt, confidence: 'authoritative' });
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: effAt, detectedAt: effAt, confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
   clock.t = Date.parse('2026-10-01T13:00:00.000Z'); // 25 minutes later -- policy grandfathers this stream indefinitely
   notify(evts, clock, ctx, { subId: '5009', principalHash: p, uriHash: hmacHash('resource:v5-09') });
   corpus.pushAll(file, evts);
@@ -875,11 +878,11 @@ function t3_v6_subscriptionIdMissingOnNotification() {
   corpus.pushAll(file, evts);
   record({
     scenario_id: 'V6-02', file,
-    purpose: 'EVASION / TELEMETRY GAP -- PARTIALLY DETECTABLE. A notification event is missing mcp.subscription.id (malformed/incomplete instrumentation). The KQL/SPL correlation still successfully joins the revocation to the PRINCIPAL (via principal.id_hash), so the drift is still detectable via the revocation-leg join alone in this project\'s actual implementation -- but any logic that required mcp.subscription.id on the notification leg specifically (e.g. the close-suppression anti-join) would silently fail to exclude a legitimately-closed different subscription for the same principal.',
-    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
-    expected_confidence: 'high', false_positive_test: false, evasion_test: true,
-    telemetry_limitation: 'PARTIALLY DETECTABLE: the primary-principal join still works, but the close-suppression check (which currently keys on mcp.subscription.id) cannot be trusted for this record -- see tests/validation and docs/validation-report.md for what still fires here and why the close-anti-join is a residual risk in this exact shape.',
-    notes: null
+    purpose: 'RECLASSIFIED by the example-driven Track 3 regression pass (see docs/validation-report.md "Track 3 remediation pass, part 3" and example #6: "revocation scope unknown, even with only one observed candidate, must report insufficient_evidence"). A notification event is missing mcp.subscription.id (malformed/incomplete instrumentation) AND the revocation event carries no mcp.authz.binding_id/affected_scope (legacy shape). A prior revision resolved this via a principal-only join (and, briefly, a "sole surviving candidate" inference); both are now recognized as unsupported inference, not evidence. This fixture now correctly reports insufficient_evidence -- the honest answer when neither the instance nor the revocation\'s target binding is known.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'insufficient_evidence', false_positive_test: false, evasion_test: true,
+    telemetry_limitation: 'Classification: NOT DETECTABLE as a resolvable finding from this telemetry shape alone (previously claimed PARTIALLY DETECTABLE via a principal-only/sole-candidate join, which this pass identifies as unsupported inference, not evidence). Recovering a resolved answer requires EITHER fixing the missing mcp.subscription.id (or instance_id) on the notification, OR emitting mcp.authz.binding_id/affected_scope on the revocation -- either alone would make this instance/binding unambiguous. See fixture V12-12 for the corrected counterpart (same "no retained open, no subscription id" shape, but WITH direct binding evidence on both the notification and the change).',
+    notes: 'PRE-CORRECTION: reported confirmed_drift via a principal-only join, later softened to a "sole-candidate" inference, both since removed. POST-CORRECTION: reports insufficient_evidence. Still counted in every metrics/coverage total -- not excluded.'
   });
 }
 
@@ -897,13 +900,14 @@ function t3_v11_multipleChangesOutOfOrder() {
   const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
   const evts = [];
   const p = hmacHash('principal:alice-v11-01');
-  sub(evts, clock, ctx, { subId: '10001', principalHash: p, validUntil: '2026-10-01T20:00:00.000Z' });
+  const binding = 'binding:v11-01';
+  sub(evts, clock, ctx, { subId: '10001', principalHash: p, bindingId: binding, validUntil: '2026-10-01T20:00:00.000Z' });
   clock.t = Date.parse('2026-10-01T17:05:00.000Z');
   // Change A is EMITTED FIRST in the file but carries a LATER (further future) effective_at.
-  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T18:00:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative' });
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T18:00:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
   clock.t = Date.parse('2026-10-01T17:10:00.000Z');
   // Change B is EMITTED SECOND in the file but carries an EARLIER effective_at than change A.
-  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T17:07:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative' });
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T17:07:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
   clock.t = Date.parse('2026-10-01T17:30:00.000Z');
   // Between B's effective_at (17:07) and A's effective_at (18:00): must fire against B only.
   notify(evts, clock, ctx, { subId: '10001', principalHash: p, uriHash: hmacHash('resource:v11-01-a') });
@@ -928,14 +932,15 @@ function t3_v11_sameSubIdDifferentPrincipals() {
   const evts = [];
   const pA = hmacHash('principal:alice-v11-02');
   const pB = hmacHash('principal:bob-v11-02');
+  const bindingA = 'binding:v11-02:alice', bindingB = 'binding:v11-02:bob';
   // mcp.subscription.id is only a per-connection JSON-RPC request id (Block 1 SS7) -- it is not
   // guaranteed globally unique, so two different principals' independent connections can
-  // legitimately reuse the same subscription_id string.
-  sub(evts, clock, ctx, { subId: '10002', principalHash: pA, validUntil: '2026-10-01T20:00:00.000Z' });
+  // legitimately reuse the same subscription_id string. Each principal has their OWN binding.
+  sub(evts, clock, ctx, { subId: '10002', principalHash: pA, bindingId: bindingA, validUntil: '2026-10-01T20:00:00.000Z' });
   clock.t = Date.parse('2026-10-01T17:40:00.000Z');
-  sub(evts, clock, ctx, { subId: '10002', principalHash: pB, validUntil: '2026-10-01T20:00:00.000Z' });
+  sub(evts, clock, ctx, { subId: '10002', principalHash: pB, bindingId: bindingB, validUntil: '2026-10-01T20:00:00.000Z' });
   clock.t = Date.parse('2026-10-01T17:45:00.000Z');
-  change(evts, clock, ctx, { principalHash: pA, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' }); // Alice ONLY
+  change(evts, clock, ctx, { principalHash: pA, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [bindingA] }); // Alice ONLY
   clock.t = Date.parse('2026-10-01T17:50:00.000Z');
   notify(evts, clock, ctx, { subId: '10002', principalHash: pB, uriHash: hmacHash('resource:v11-02-bob') }); // Bob, unrevoked, same subId string
   clock.t = Date.parse('2026-10-01T17:52:00.000Z');
@@ -963,9 +968,10 @@ function t3_v11_revocationAndExpiryBothApply() {
   const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
   const evts = [];
   const p = hmacHash('principal:alice-v11-03');
-  sub(evts, clock, ctx, { subId: '10003', principalHash: p, validUntil: '2026-10-01T18:10:00.000Z' });
+  const binding = 'binding:v11-03';
+  sub(evts, clock, ctx, { subId: '10003', principalHash: p, bindingId: binding, validUntil: '2026-10-01T18:10:00.000Z' });
   clock.t = Date.parse('2026-10-01T18:05:00.000Z');
-  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T18:03:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative' });
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T18:03:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
   clock.t = Date.parse('2026-10-01T18:20:00.000Z'); // after BOTH valid_until (18:10) and effective_at (18:03)
   notify(evts, clock, ctx, { subId: '10003', principalHash: p, uriHash: hmacHash('resource:v11-03') });
   corpus.pushAll(file, evts);
@@ -985,11 +991,12 @@ function t3_v11_expiryBeforeFutureRevocation() {
   const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
   const evts = [];
   const p = hmacHash('principal:alice-v11-04');
-  sub(evts, clock, ctx, { subId: '10004', principalHash: p, validUntil: '2026-10-01T18:35:00.000Z' }); // expires EARLY
+  const binding = 'binding:v11-04';
+  sub(evts, clock, ctx, { subId: '10004', principalHash: p, bindingId: binding, validUntil: '2026-10-01T18:35:00.000Z' }); // expires EARLY
   clock.t = Date.parse('2026-10-01T18:36:00.000Z'); // after expiry, before any revocation exists
   notify(evts, clock, ctx, { subId: '10004', principalHash: p, uriHash: hmacHash('resource:v11-04-a') });
   clock.t = Date.parse('2026-10-01T18:40:00.000Z');
-  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T18:45:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative' }); // FUTURE relative to N1
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: '2026-10-01T18:45:00.000Z', detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] }); // FUTURE relative to N1
   clock.t = Date.parse('2026-10-01T18:50:00.000Z'); // after BOTH boundaries now
   notify(evts, clock, ctx, { subId: '10004', principalHash: p, uriHash: hmacHash('resource:v11-04-b') });
   corpus.pushAll(file, evts);
@@ -1128,9 +1135,10 @@ function t3_v11_multipleCloseEvents() {
   const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
   const evts = [];
   const p = hmacHash('principal:alice-v11-10');
-  sub(evts, clock, ctx, { subId: '10011', principalHash: p, validUntil: '2026-10-01T23:00:00.000Z' });
+  const binding = 'binding:v11-10';
+  sub(evts, clock, ctx, { subId: '10011', principalHash: p, bindingId: binding, validUntil: '2026-10-01T23:00:00.000Z' });
   clock.t = Date.parse('2026-10-01T20:25:00.000Z');
-  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' });
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
   clock.t = Date.parse('2026-10-01T20:27:00.000Z'); // after revocation, BEFORE either close -- must fire
   notify(evts, clock, ctx, { subId: '10011', principalHash: p, uriHash: hmacHash('resource:v11-10-a') });
   clock.t = Date.parse('2026-10-01T20:30:00.000Z');
@@ -1511,6 +1519,177 @@ function t3_v12_correctedCrossSubscriptionCounterpart() {
 }
 
 // ===========================================================================
+// TRACK 3 -- V13 example-driven regression fixtures (see docs/validation-report.md "Track 3
+// remediation pass, part 3"). Close the remaining gaps in the ten independently-specified
+// examples that motivated this pass: delivery during a genuinely invalid interval that a later
+// renewal must not erase (#4), an unrelated binding existing EARLIER (#5's other direction --
+// V12-07 already covers "later"), a clean single-candidate "unknown scope" case decoupled from
+// any other confounding factor (#6), a same-principal wire-id reopen (#9's other direction --
+// V12-05 already covers cross-tenant reuse), and self-contradictory ("authoritative" but no
+// effective_at) timing evidence (#10's timing-specific case).
+// ===========================================================================
+
+function t3_v13_confirmedDuringInvalidIntervalRenewalDoesNotErase() {
+  const file = 'track3/v13_confirmed_during_invalid_interval.jsonl';
+  const clock = new Clock('2026-10-03T09:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v13-01');
+  const binding = 'binding:v13-01', newBinding = 'binding:v13-01:renewed';
+  sub(evts, clock, ctx, { subId: '30001', principalHash: p, bindingId: binding, validUntil: '2026-10-03T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-03T09:05:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
+  clock.t = Date.parse('2026-10-03T09:10:00.000Z'); // delivered WHILE genuinely invalid, before any replacement exists
+  notify(evts, clock, ctx, { subId: '30001', principalHash: p, uriHash: hmacHash('resource:v13-01-a') });
+  // A renewal/replacement occurs AFTER the fact: a later notification proves rebinding to a NEW,
+  // valid binding. This must NOT retroactively erase the earlier notification's confirmed drift.
+  clock.t = Date.parse('2026-10-03T09:20:00.000Z');
+  notify(evts, clock, ctx, { subId: '30001', principalHash: p, uriHash: hmacHash('resource:v13-01-b'), bindingId: newBinding, validUntil: '2026-10-03T12:00:00.000Z' });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V13-01', file,
+    purpose: 'EXAMPLE #4: a notification is delivered during a genuinely invalid interval (after an explicit, binding-scoped revocation, before any replacement authorization exists) -- must confirm drift. A LATER renewal (proven rebinding to a new, valid binding for a subsequent notification) must not retroactively erase that earlier confirmed finding -- each notification is evaluated independently against the evidence that existed for it.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null,
+    notes: 'See tests/validation/track3_row_regression.test.js: the first notification must remain confirmed_drift regardless of the second, later, clean notification.'
+  });
+}
+
+function t3_v13_unrelatedBindingEarlier() {
+  const file = 'track3/v13_unrelated_binding_earlier.jsonl';
+  const clock = new Clock('2026-10-03T09:30:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v13-02');
+  const oldUnrelated = 'binding:v13-02:old-unrelated', current = 'binding:v13-02:current';
+  // An EARLIER, unrelated binding existed and was revoked well before the binding under test
+  // even opens.
+  sub(evts, clock, ctx, { subId: '30002', principalHash: p, bindingId: oldUnrelated, validUntil: '2026-10-03T09:35:00.000Z' });
+  clock.t = Date.parse('2026-10-03T09:32:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [oldUnrelated] });
+  clock.t = Date.parse('2026-10-03T09:33:00.000Z');
+  closeSub(evts, clock, ctx, { subId: '30002', principalHash: p, reason: 'client_closed' });
+  // The subscription under test opens LATER, under a completely different, never-revoked binding.
+  clock.t = Date.parse('2026-10-03T09:40:00.000Z');
+  sub(evts, clock, ctx, { subId: '30003', principalHash: p, bindingId: current, validUntil: '2026-10-03T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-03T09:45:00.000Z');
+  notify(evts, clock, ctx, { subId: '30003', principalHash: p, uriHash: hmacHash('resource:v13-02') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V13-02', file,
+    purpose: 'EXAMPLE #5 (earlier direction -- V12-07 covers the later direction): an unrelated binding for the SAME principal existed and was explicitly revoked BEFORE the binding under test even opened. Must not affect this notification -- the revocation explicitly names only the old, unrelated binding.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: true, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v13_unknownScopeSingleCandidate() {
+  const file = 'track3/v13_unknown_scope_single_candidate.jsonl';
+  const clock = new Clock('2026-10-03T10:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v13-03');
+  // Deliberately NO bindingId on the open event, and NO affectedScope on the change -- this
+  // principal has exactly ONE observable subscription in this fixture, which a sole-candidate
+  // inference (now removed) would have used to justify a confirmed finding.
+  sub(evts, clock, ctx, { subId: '30004', principalHash: p, validUntil: '2026-10-03T13:00:00.000Z' });
+  clock.t = Date.parse('2026-10-03T10:05:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative' });
+  clock.t = Date.parse('2026-10-03T10:10:00.000Z');
+  notify(evts, clock, ctx, { subId: '30004', principalHash: p, uriHash: hmacHash('resource:v13-03') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V13-03', file,
+    purpose: 'EXAMPLE #6 (clean, single-purpose case): the revocation\'s scope is unknown (no affected_scope/affected_binding_ids), and exactly ONE subscription/binding is observable for this principal anywhere in the fixture. Must report insufficient_evidence, NOT confirmed_drift -- candidate count must never substitute for evidence, even when the count happens to be exactly one.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'insufficient_evidence', false_positive_test: false, evasion_test: true,
+    telemetry_limitation: 'Classification: NOT DETECTABLE as a resolvable finding without mcp.authz.change.affected_scope/affected_binding_ids -- a "the only one we happen to have observed" inference is not evidence of what the authorization server actually intended to invalidate.',
+    notes: 'Directly instantiates the rule removed in this pass: a prior revision resolved this exact shape to confirmed_drift via a sole-candidate fallback.'
+  });
+}
+
+function t3_v13_requestIdReusedAfterReopen() {
+  const file = 'track3/v13_request_id_reused_after_reopen.jsonl';
+  const clock = new Clock('2026-10-03T10:20:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v13-04');
+  const oldBinding = 'binding:v13-04:old', newBinding = 'binding:v13-04:new';
+  sub(evts, clock, ctx, { subId: '5', instanceId: 'inst-v13-04-old', principalHash: p, bindingId: oldBinding, validUntil: '2026-10-03T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-03T10:25:00.000Z');
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [oldBinding] });
+  clock.t = Date.parse('2026-10-03T10:26:00.000Z');
+  closeSub(evts, clock, ctx, { subId: '5', instanceId: 'inst-v13-04-old', principalHash: p, reason: 'transport_drop' });
+  // Client reopens, reusing the IDENTICAL wire subscription_id ("5") -- a brand-new instance and
+  // a brand-new binding.
+  clock.t = Date.parse('2026-10-03T10:30:00.000Z');
+  sub(evts, clock, ctx, { subId: '5', instanceId: 'inst-v13-04-new', principalHash: p, bindingId: newBinding, validUntil: '2026-10-03T12:00:00.000Z' });
+  clock.t = Date.parse('2026-10-03T10:35:00.000Z');
+  notify(evts, clock, ctx, { subId: '5', instanceId: 'inst-v13-04-new', principalHash: p, uriHash: hmacHash('resource:v13-04') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V13-04', file,
+    purpose: 'EXAMPLE #9 (same-principal reopen -- V12-05 covers the cross-tenant direction): the wire subscription_id ("5") is reused by the SAME principal after closing and reopening. The old instance was revoked and closed; the new instance (distinct instance_id, distinct binding) must not be affected by the old instance\'s close or revocation.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'not_applicable', false_positive_test: true, evasion_test: false, telemetry_limitation: null, notes: null
+  });
+}
+
+function t3_v13_incompleteTimingEvidence() {
+  const file = 'track3/v13_incomplete_timing_evidence.jsonl';
+  const clock = new Clock('2026-10-03T10:40:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v13-05');
+  const binding = 'binding:v13-05';
+  sub(evts, clock, ctx, { subId: '30005', principalHash: p, bindingId: binding, validUntil: '2026-10-03T13:00:00.000Z' });
+  clock.t = Date.parse('2026-10-03T10:45:00.000Z');
+  // Self-contradictory record: claims timing_confidence=authoritative (and the scope IS known)
+  // but carries no effective_at at all.
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'binding', affectedBindingIds: [binding] });
+  clock.t = Date.parse('2026-10-03T10:50:00.000Z');
+  notify(evts, clock, ctx, { subId: '30005', principalHash: p, uriHash: hmacHash('resource:v13-05') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V13-05', file,
+    purpose: 'EXAMPLE #10 (timing-specific case): the revocation\'s SCOPE is unambiguous (affected_scope=binding, correctly naming this instance\'s binding), but its TIMING evidence is incomplete -- it claims timing_confidence=authoritative yet carries no effective_at at all, a self-contradictory record. Must report insufficient_evidence, never silently fall back to "does not apply" (which would be a false negative) or to detected_at (which would violate the locked timing-confidence model).',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: false,
+    expected_confidence: 'insufficient_evidence', false_positive_test: false, evasion_test: true,
+    telemetry_limitation: 'Classification: NOT DETECTABLE as a resolvable finding -- an authorization-server record that claims authoritative timing without providing effective_at is malformed at the source; no query-level fix compensates for it.',
+    notes: null
+  });
+}
+
+function t3_v13_allPrincipalBindingsPreciseInterval() {
+  const file = 'track3/v13_all_principal_bindings_precise_interval.jsonl';
+  const clock = new Clock('2026-10-03T11:00:00.000Z');
+  const ctx = { protocolVersion: PROTOCOL_VERSION, transport: TRANSPORT };
+  const evts = [];
+  const p = hmacHash('principal:alice-v13-06');
+  const oldBinding = 'binding:v13-06:old', newBinding = 'binding:v13-06:new';
+  sub(evts, clock, ctx, { subId: '30008', principalHash: p, bindingId: oldBinding, validUntil: '2026-10-03T14:00:00.000Z' });
+  clock.t = Date.parse('2026-10-03T11:05:00.000Z');
+  // account-wide disablement -- explicitly claims to cover EVERY binding this principal holds.
+  change(evts, clock, ctx, { principalHash: p, type: 'revoked', effectiveAt: clock.iso(), detectedAt: clock.iso(), confidence: 'authoritative', affectedScope: 'all_principal_bindings' });
+  clock.t = Date.parse('2026-10-03T11:10:00.000Z'); // the OLD binding existed at effective_at -- must confirm
+  notify(evts, clock, ctx, { subId: '30008', principalHash: p, uriHash: hmacHash('resource:v13-06-old') });
+  // A brand-new binding is issued for the SAME principal AFTER the disablement event -- it did
+  // not exist at effective_at, so the account-wide claim could not possibly have covered it.
+  clock.t = Date.parse('2026-10-03T11:15:00.000Z');
+  sub(evts, clock, ctx, { subId: '30009', principalHash: p, bindingId: newBinding, validUntil: '2026-10-03T14:00:00.000Z' });
+  clock.t = Date.parse('2026-10-03T11:20:00.000Z');
+  notify(evts, clock, ctx, { subId: '30009', principalHash: p, uriHash: hmacHash('resource:v13-06-new') });
+  corpus.pushAll(file, evts);
+  record({
+    scenario_id: 'V13-06', file,
+    purpose: 'PRECISE EFFECTIVE-TIME INTERVAL (replaces an "ever observed anywhere in the window" approximation): an affected_scope=all_principal_bindings revocation explicitly claims to cover every binding this principal holds. The OLD binding existed at effective_at and must confirm. A NEW binding issued AFTER effective_at did not exist yet at the moment of the change, so the account-wide claim could not have covered it -- it must NOT confirm, even though it shares the same principal and the same nominal "all bindings" change.',
+    expected_detection_track_1: false, expected_detection_track_2: false, expected_detection_track_3: true,
+    expected_confidence: 'high', false_positive_test: false, evasion_test: false, telemetry_limitation: null,
+    notes: 'See tests/validation/track3_row_regression.test.js for the exact per-subscription split (old confirms, new does not).'
+  });
+}
+
+// ===========================================================================
 // ENRICHMENT -- V8
 // ===========================================================================
 
@@ -1773,6 +1952,13 @@ t3_v12_conflictingEvidence();
 t3_v12_incompatibleHashEpoch();
 t3_v12_directlyScopedNoRetainedOpen();
 t3_v12_correctedCrossSubscriptionCounterpart();
+
+t3_v13_confirmedDuringInvalidIntervalRenewalDoesNotErase();
+t3_v13_unrelatedBindingEarlier();
+t3_v13_unknownScopeSingleCandidate();
+t3_v13_requestIdReusedAfterReopen();
+t3_v13_incompleteTimingEvidence();
+t3_v13_allPrincipalBindingsPreciseInterval();
 
 e_tinyMaliciousMismatch();
 e_hugeLegitimateResult();

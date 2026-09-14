@@ -33,6 +33,23 @@ reporting model, 13 new regression fixtures (V12-01..V12-13), and two deliberate
 (V5-02, V11-05, V11-11 — retained, not deleted, and now correctly reported as
 `insufficient_evidence` rather than a confirmed or accepted-false-positive drift).
 
+**Track 3 remediation pass, part 3 — example-driven regression pass (this document's fourth
+revision):** a third follow-up review found that part 2's own fix still carried an unsound
+shortcut: a "sole-candidate fallback" that resolved an `affected_scope = unknown` change to a
+confirmed finding whenever exactly one binding was observed for a principal. That is still an
+inference, not evidence (fixture V13-03 proves candidate count must never substitute for scope
+evidence, even when the count is exactly one), so it is removed in this revision. This pass also
+replaces an "ever observed anywhere in the queried window" approximation for
+`affected_scope = all_principal_bindings` with a PRECISE effective-time interval check (fixture
+V13-06), detects a genuinely self-contradictory record shape (authoritative timing claimed with
+no `effective_at`, fixture V13-05), and adds ten independently-specified examples with their own
+expected outcomes as the starting point for the whole pass (see "Track 3 remediation pass, part
+3" below for the full account and the example table). Six prior fixtures needed real scope
+evidence added to preserve their original timing-correctness test intent under the stricter
+model (A12, A14, A-EXP1, V5-07, V5-09, V11-01 through V11-04 and V11-10); one fixture (V6-02) is
+reclassified from a claimed "partially detectable" finding to `insufficient_evidence`, matching
+example #6 exactly.
+
 **Post-hoc audit correction (applied to this document):** an earlier version of this report
 presented a single "full stress-test corpus" precision/recall table showing FP=0 across the
 board, while separately describing V1-08, V5-02, and V5-09 in prose as benign-but-firing
@@ -59,8 +76,8 @@ version fixes that.
 | Block 3 (normal) | 13 | 106 | Negative-test baseline |
 | Block 4 (attack/control) | 18 | 94 | Positive/negative attack-class proof |
 | **Curated core (3+4)** | **31** | **200** | The metrics reported at the end of Block 5 |
-| Block 6 (validation/stress) | 61 | 285 | Adversarial-but-benign + boundary + evasion fixtures, incl. 11 join-key/multi-boundary regression fixtures (V11-01..V11-11) and 13 scope-aware-correction fixtures (V12-01..V12-13) |
-| **Full stress-test corpus (3+4+6)** | **92** | **485** | This block's metrics |
+| Block 6 (validation/stress) | 67 | 319 | Adversarial-but-benign + boundary + evasion fixtures, incl. 11 join-key/multi-boundary fixtures (V11-01..V11-11), 13 scope-aware-correction fixtures (V12-01..V12-13), and 6 example-driven regression fixtures (V13-01..V13-06) |
+| **Full stress-test corpus (3+4+6)** | **98** | **519** | This block's metrics |
 
 All four corpora are deterministic (fixed logical clocks, fixed identifiers, fixed HMAC test
 key) and regenerate byte-for-byte identically. Block 6's corpus lives under `data/validation/`
@@ -120,13 +137,13 @@ alert?"** — that second question is View 2, below.
 | 2 | 5 | 0 | 26 | 0 | 31 | 1.000 | 1.000 |
 | 3 (excl. experimental A-EXP1) | 3 | 0 | 27 | 0 | 30 | 1.000 | 1.000 |
 
-### Full stress-test corpus (92 scenarios) — after both Track 3 remediation passes
+### Full stress-test corpus (98 scenarios) — after all three Track 3 remediation passes
 
 | Track | TP | FP | TN | FN | n | Precision | Recall |
 |---|---|---|---|---|---|---|---|
-| 1 | 8 | 0 | 84 | 0 | 92 | 1.000 | 1.000 |
-| 2 | 9 | 0 | 83 | 0 | 92 | 1.000 | 1.000 |
-| 3 (excl. experimental A-EXP1) | 20 | 0 | 71 | 0 | 91 | 1.000 | 1.000 |
+| 1 | 8 | 0 | 90 | 0 | 98 | 1.000 | 1.000 |
+| 2 | 9 | 0 | 89 | 0 | 98 | 1.000 | 1.000 |
+| 3 (excl. experimental A-EXP1) | 21 | 0 | 76 | 0 | 97 | 1.000 | 1.000 |
 
 **These per-scenario TP/FP/TN/FN numbers collapse `track3PrimaryFires` to a boolean (fired iff
 at least one `confirmed_drift` row exists) — they do NOT show how many notifications were
@@ -135,24 +152,28 @@ indistinguishable in this table from one where every notification came back
 `insufficient_evidence` rather than a positively-confirmed clean result. See "Track 3 coverage
 report" below for that breakdown, computed separately for exactly this reason.
 
-### Track 3 coverage report (part 2 addition) — confirmed / clean / insufficient, reported separately
+### Track 3 coverage report (part 3 revision) — confirmed / clean / insufficient, reported separately
 
 Computed mechanically by `tests/validation/metrics.test.js`'s coverage test, over every
 notification in the full stress corpus (excluding the experimental A-EXP1 scenario):
 
 | Outcome | Count | Share |
 |---|---|---|
-| `confirmed_drift` | 26 | 49.1% |
-| `evaluated_no_violation` | 20 | 37.7% |
-| `insufficient_evidence` | 7 | 13.2% |
-| **Total evaluated notifications** | **53** | 100% |
+| `confirmed_drift` | 27 | 44.3% |
+| `evaluated_no_violation` | 24 | 39.3% |
+| `insufficient_evidence` | 10 | 16.4% |
+| **Total evaluated notifications** | **61** | 100% |
 
-`insufficient_evidence` breakdown by reason: `missing_scope_evidence` (2), `no_invalidity_evidence`
-(2), `ambiguous_scope` (1), `conflicting_evidence` (1), `incompatible_hash_epoch` (1). **This
-13.2% is not a defect to be minimized to zero** — it is the correction working as intended: every
-one of these seven notifications previously either mechanically fired (a false positive risk) or
-mechanically cleared (a false negative risk) under principal-only or scope-blind logic, and now
-honestly reports that the telemetry available does not support a confident answer either way.
+`insufficient_evidence` breakdown by reason: `ambiguous_scope` (5), `no_invalidity_evidence` (1),
+`missing_scope_evidence` (1), `conflicting_evidence` (1), `incompatible_hash_epoch` (1),
+`incomplete_timing_evidence` (1). **This 16.4% is not a defect to be minimized to zero** — it is
+the correction working as intended: every one of these ten notifications would previously have
+either mechanically fired (a false-positive risk, e.g. via the now-removed sole-candidate
+inference) or mechanically cleared (a false-negative risk) under principal-only, scope-blind, or
+candidate-count logic, and now honestly reports that the telemetry available does not support a
+confident answer either way. `ambiguous_scope` grew from 4 to 5 in this revision specifically
+because the sole-candidate fallback (part 2's own unsound shortcut) was removed — see "Track 3
+remediation pass, part 3" below.
 
 **These numbers are controlled-corpus implementation-correctness metrics, evaluated under the
 declared prerequisites above. They are NOT real-world precision/recall and must never be cited
@@ -299,11 +320,11 @@ FP or FN relative to the correct implementation):
 | Track 2: any `deny` fires (drops reason check) | 0 / — | 3 / — | Yes |
 | Track 2: any `mcp.task.authorization` event fires (drops decision check) | 0 / — | 19 / — | Yes |
 | Track 3: `detected_at` used instead of `effective_at` | — / 0 | — / 5 | Yes |
-| Track 3: close-suppression check removed | 0 / — | 58 / — | Yes |
-| Track 3: `mcp.authz.change.type` filter removed (reintroduces V5-03) | 0 / — | 59 / — | Yes |
+| Track 3: close-suppression check removed | 0 / — | 62 / — | Yes |
+| Track 3: `mcp.authz.change.type` filter removed (reintroduces V5-03) | 0 / — | 61 / — | Yes |
 
-(Counts grew alongside the corpus after the two Track 3 remediation passes added 11 + 13 regression
-fixtures; re-run `node --test tests/validation/mutation.test.js` rather than assuming these
+(Counts grew alongside the corpus after the three Track 3 remediation passes added
+11 + 13 + 7 regression fixtures; re-run `node --test tests/validation/mutation.test.js` rather than assuming these
 exact numbers stay fixed across future corpus changes.)
 
 The last row is a direct, mechanical demonstration that this validation suite would have caught
@@ -336,9 +357,9 @@ V12 fixtures designed to expose exactly this gap.
 
 | Track | Sigma vs. KQL vs. SPL | Verified how |
 |---|---|---|
-| 1 | Fully equivalent across all 92 stress-corpus scenarios | `tests/validation/language_equivalence.test.js` — three independently-written JS predicates mirroring each language's literal filter, zero disagreements |
-| 2 | Fully equivalent across all 92 stress-corpus scenarios | Same method, zero disagreements |
-| 3 | **The independently-coded KQL-model and SPL-model outcomes agree on every notification across all 92 stress-corpus scenarios. Sigma is NOT equivalent — retained only as a documented, deliberately incomplete correlation.** | Per-notification outcome comparison, not a boolean; see matrix below for the Sigma comparison |
+| 1 | Fully equivalent across all 98 stress-corpus scenarios | `tests/validation/language_equivalence.test.js` — three independently-written JS predicates mirroring each language's literal filter, zero disagreements |
+| 2 | Fully equivalent across all 98 stress-corpus scenarios | Same method, zero disagreements |
+| 3 | **The independently-coded KQL-model and SPL-model outcomes agree on every notification across all 98 stress-corpus scenarios. Sigma is NOT equivalent — retained only as a documented, deliberately incomplete correlation.** | Per-notification outcome comparison, not a boolean; see matrix below for the Sigma comparison |
 
 ### Track 3 Sigma-vs-authoritative comparison matrix (curated core, non-experimental)
 
@@ -595,6 +616,74 @@ deliberately reclassified rather than deleted or silently excluded:
   known binding). Both remain in the manifest and in every metrics/coverage count — see
   `tests/validation/metrics.test.js` and the coverage report above.
 
+## Track 3 remediation pass, part 3 (example-driven regression pass)
+
+A third follow-up review started from ten independently-specified examples (not from re-reading
+the code first) and only then checked each example against the actual KQL and SPL source.
+
+### The ten examples and their outcomes
+
+| # | Example | Expected outcome | Fixture(s) |
+|---|---|---|---|
+| 1 | Subscription loses permission and delivers afterward | `confirmed_drift` | A12, V12-01 (binding A) |
+| 2 | Same principal: A loses permission, independently authorized B delivers | `evaluated_no_violation` for B | V12-01 (binding B) |
+| 3 | A valid replacement authorization takes effect before delivery | old expiry must not trigger | V12-06 |
+| 4 | Delivery during an invalid interval before replacement | `confirmed_drift`; later renewal must not erase it | V13-01 |
+| 5 | An unrelated binding exists earlier or appears later | must not affect this notification | V13-02 (earlier), V12-07 (later) |
+| 6 | Revocation scope unknown, even with only one observed candidate | `insufficient_evidence` | V13-03 (clean case), V6-02 (real-world instance) |
+| 7 | Unrelated permission removed / required permission removed | `evaluated_no_violation` / `confirmed_drift` | V12-03 / V12-04 |
+| 8 | Events arrive out of order | resolved via authoritative effective times | V12-08 |
+| 9 | A request ID is reused after reopening | old closes/revocations must not affect the new instance | V13-04 (same-principal reopen), V12-05 (cross-tenant reuse) |
+| 10 | Timing or binding evidence is conflicting/incomplete | `insufficient_evidence` | V12-09 (missing scope), V12-10 (conflicting), V12-11 (hash epoch), V13-05 (incomplete timing) |
+
+Row-level assertions for every example: `tests/validation/track3_row_regression.test.js`.
+
+### Two further code defects found and fixed
+
+1. **The "sole-candidate fallback" (part 2's own unsound shortcut) is removed.** It resolved an
+   `affected_scope = unknown` change to `confirmed_drift` whenever exactly one binding was
+   observed for a principal — still an inference, not evidence. `affected_scope = unknown` (or a
+   legacy event predating the field) now ALWAYS resolves to `insufficient_evidence` when timing
+   would otherwise indicate a violation, regardless of candidate count. Proven by fixture V13-03
+   and the "RESTORED-BUG PROOF" test that re-derives the removed inference independently and
+   shows it would wrongly confirm both V13-03 and V6-02.
+2. **`affected_scope = all_principal_bindings` now uses a PRECISE effective-time interval**
+   instead of an "ever observed anywhere in the queried window" approximation: a binding only
+   counts as one of "all bindings this principal held" if it was already open, and not yet
+   closed, at the moment the change took effect. Proven by fixture V13-06: an account-wide
+   revocation confirms on a pre-existing binding but not on a binding issued afterward.
+3. **Suppression is now checked before scope ambiguity/conflict, in both the JS oracle and both
+   query files** — a legitimately closed stream needs no scope resolution at all; "the subscriber
+   already stopped receiving notifications through the proper channel" is definitive regardless
+   of which binding a revocation targeted. (Discovered while re-deriving fixture V11-07 under the
+   stricter unknown-scope rule — without this reordering, a correctly-suppressed notification
+   would have been misreported as `insufficient_evidence` instead of `evaluated_no_violation`.)
+4. **A self-contradictory record shape is now explicitly detected**: an `authorization_change`
+   claiming `timing_confidence = authoritative` but omitting `effective_at` entirely. Both the JS
+   oracle and the KQL query detect this explicitly and report `insufficient_evidence` (reason
+   `incomplete_timing_evidence`) rather than silently letting a null-timestamp comparison make the
+   record disappear as if it "did not apply" (fixture V13-05).
+
+### One exact unresolved case identified, not approximated
+
+**A genuine bug was found and fixed in KQL during this pass, not merely documented.** The first
+draft of this revision's KQL query relied on `todatetime()` converting a missing
+`mcp.authz.change.effective_at` to `null`, and a `null` comparison (`notifTime > effectiveAt`)
+silently filtering the row out of `RevocationCandidates` — which would have misreported fixture
+V13-05 as `evaluated_no_violation`/no-signal-at-all rather than `insufficient_evidence`. Per the
+explicit instruction to identify an unresolved case rather than approximate it, this was
+investigated and found to be fixable: `MalformedTimingSignals` now detects the missing
+`effective_at` explicitly, BEFORE any `todatetime()`-based comparison can silently discard it
+(see the KQL file's own comment for the exact mechanism). This is called out here because it is
+exactly the kind of gap this pass was designed to surface — the difference between "identify the
+exact case and fix it" and "identify the exact case and approximate past it" mattered in
+practice, not just in principle.
+
+No other case in the ten examples was found to be inexpressible in either query language at the
+level of precision this pass targets; both queries were checked example-by-example against the
+JS reference oracle's row-level output (see `tests/validation/language_equivalence.test.js`) and
+found to agree on every notification in the full stress corpus.
+
 ## Remaining risks (unresolved, explicitly not decided in this block)
 
 1. **RESOLVED in "Track 3 remediation pass, part 2" above.** Track 3's principal-only join for
@@ -615,13 +704,18 @@ deliberately reclassified rather than deleted or silently excluded:
    upstream instrumentation correctness prevents it.
 3. **Severity-by-`mcp.validation.source` differentiation** for Track 1 remains an open,
    reasonable enhancement, deliberately not implemented this block.
-4. **KQL/SPL binding-candidate temporal approximation** ("Track 3 remediation pass, part 2"
-   above): the sole-candidate fallback and `all_principal_bindings` broadening approximate
-   "was this binding open as of the change's effective_at" as "ever observed for this principal,"
-   not precisely interval-bounded, in the query languages (not in the JS oracle). A deployment
-   relying on native KQL/SPL execution in a scenario with many short-lived, non-overlapping
-   bindings per principal could see this simplification matter; the JS oracle remains the precise
-   reference.
+4. **RESOLVED in "Track 3 remediation pass, part 3" above.** Part 2's KQL/SPL sole-candidate
+   fallback and its "ever observed anywhere in the queried window" approximation for
+   `all_principal_bindings` are both removed/replaced: the sole-candidate fallback is gone
+   entirely (fixture V13-03), and `all_principal_bindings` now uses a precise effective-time
+   interval check in both KQL and SPL, matching the JS oracle (fixture V13-06).
+5. **A deployment relying on genuinely multi-tag `mcp.subscription.required_scope`/
+   `mcp.authz.change.removed_scope` values should be aware the SPL scope-downgrade relevance
+   check is an approximation** (it compares each side's first scope tag, correct for this
+   project's single-tag fixtures) — see `detections/spl/mcp_subscription_authorization_drift.spl`'s
+   own header comment. The JS oracle and KQL (via `set_intersect`) both implement the precise
+   any-element intersection; only the SPL reference query has this specific, narrower
+   simplification, because SPL has no built-in set-intersection over two multivalue fields.
 
 ## Whether Block 1–5 assumptions changed
 

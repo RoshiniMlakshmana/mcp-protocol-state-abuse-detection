@@ -413,6 +413,7 @@ function scenarioA12() {
       'jsonrpc.request.id': subId, 'mcp.subscription.id': subId,
       'principal.id_hash': principalHash, 'principal.authenticated': true,
       'mcp.authz.grant_snapshot_hash': hmacHash('grant:alice-a12:v1'),
+      'mcp.authz.binding_id': 'binding:a12',
       'mcp.authz.grant_expiry': '2026-09-05T12:00:00.000Z', 'mcp.authz.valid_until': '2026-09-05T12:00:00.000Z',
       'mcp.subscription.filter_types': { resourcesListChanged: false, toolsListChanged: false }
     }
@@ -430,7 +431,8 @@ function scenarioA12() {
       'principal.id_hash': principalHash, 'mcp.authz.change.type': 'revoked',
       'mcp.authz.change.source': 'authorization_server_event',
       'mcp.authz.change.effective_at': clock.iso(), 'mcp.authz.change.detected_at': clock.iso(),
-      'mcp.authz.change.timing_confidence': 'authoritative'
+      'mcp.authz.change.timing_confidence': 'authoritative',
+      'mcp.authz.change.affected_scope': 'binding', 'mcp.authz.change.affected_binding_ids': ['binding:a12']
     }
   }));
   clock.t = Date.parse('2026-09-05T10:11:00.000Z'); // "10:11 notification delivered" -- THE VIOLATION
@@ -531,6 +533,7 @@ function scenarioA14() {
       'jsonrpc.request.id': subId, 'mcp.subscription.id': subId,
       'principal.id_hash': principalHash, 'principal.authenticated': true,
       'mcp.authz.grant_snapshot_hash': hmacHash('grant:alice-a14:v1'),
+      'mcp.authz.binding_id': 'binding:a14',
       'mcp.authz.grant_expiry': '2026-09-05T11:00:00.000Z', 'mcp.authz.valid_until': '2026-09-05T11:00:00.000Z',
       'mcp.subscription.filter_types': { resourcesListChanged: false, toolsListChanged: false }
     }
@@ -556,7 +559,8 @@ function scenarioA14() {
       'mcp.authz.change.source': 'authorization_server_event',
       'mcp.authz.change.effective_at': '2026-09-05T10:10:00.000Z',
       'mcp.authz.change.detected_at': '2026-09-05T10:14:00.000Z',
-      'mcp.authz.change.timing_confidence': 'authoritative'
+      'mcp.authz.change.timing_confidence': 'authoritative',
+      'mcp.authz.change.affected_scope': 'binding', 'mcp.authz.change.affected_binding_ids': ['binding:a14']
     }
   }));
   clock.t = Date.parse('2026-09-05T10:20:00.000Z');
@@ -721,6 +725,7 @@ function scenarioAExp1() {
       'jsonrpc.request.id': subId, 'mcp.subscription.id': subId,
       'principal.id_hash': principalHash, 'principal.authenticated': true,
       'mcp.authz.grant_snapshot_hash': hmacHash('grant:alice-aexp1:v1'),
+      'mcp.authz.binding_id': 'binding:aexp1',
       'mcp.authz.valid_until': '2026-09-05T17:00:00.000Z'
     }
   }));
@@ -734,7 +739,8 @@ function scenarioAExp1() {
       'principal.id_hash': principalHash, 'mcp.authz.change.type': 'revoked',
       'mcp.authz.change.source': 'authorization_server_event',
       'mcp.authz.change.effective_at': revokedAt, 'mcp.authz.change.detected_at': revokedAt,
-      'mcp.authz.change.timing_confidence': 'authoritative'
+      'mcp.authz.change.timing_confidence': 'authoritative',
+      'mcp.authz.change.affected_scope': 'binding', 'mcp.authz.change.affected_binding_ids': ['binding:aexp1']
     }
   }));
   clock.t = Date.parse('2026-09-05T16:11:00.000Z');

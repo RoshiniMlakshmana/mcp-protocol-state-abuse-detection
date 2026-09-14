@@ -1,36 +1,43 @@
 ```
 MCP Long-Lived Subscription Authorization Drift (Track 3) -- SCOPE-AWARE CORRECTION
+(example-driven regression pass -- see docs/validation-report.md "Track 3 remediation pass,
+part 3" for the ten independently-specified examples this query is checked against)
 
 Placeholder source: index=mcp_security_audit sourcetype=mcp:audit:json -- not shipped by
 Splunk by default. See detections/field-mapping.md.
 
 This is the AUTHORITATIVE implementation of Track 3, mirroring
 detections/kql/mcp_subscription_authorization_drift.kql structurally (same tables, same
-resolution algorithm, same documented simplification) -- see that file's header comment for the
-full rationale and citation trail (telemetry/schema.md SS5 "Scope-aware correction",
-telemetry/correlation.md "Resolving affected bindings"). This SPL query is NOT independently
-re-derived from first principles; it is a direct structural port, so the two stay honestly
-comparable rather than accidentally diverging in ways neither author intended.
+resolution algorithm) -- see that file's header comment for the full rationale and citation
+trail (telemetry/schema.md SS5 "Scope-aware correction", telemetry/correlation.md "Resolving
+affected bindings"). This SPL query is NOT independently re-derived from first principles; it is
+a direct structural port, so the two stay honestly comparable rather than accidentally diverging
+in ways neither author intended.
+
+THIS REVISION removes the "sole-candidate fallback" a prior revision used to resolve an
+affected_scope=unknown change whenever exactly one binding was observed for a principal. THAT
+WAS STILL AN INFERENCE, not evidence (fixture V13-03: candidate count of exactly one must never
+substitute for scope evidence). affected_scope=unknown now ALWAYS resolves to
+InsufficientEvidence when timing would otherwise indicate a violation.
+
+THIS REVISION also replaces an "ever observed anywhere in the queried window" approximation for
+affected_scope=all_principal_bindings with a PRECISE effective-time interval check: a binding
+only counts as one of "all bindings this principal held" if it was already open (and not yet
+closed) AT THE MOMENT the change took effect (fixture V13-06).
 
 THREE-OUTCOME REPORTING: every evaluated notification produces exactly one Outcome:
 ConfirmedDrift | EvaluatedNoViolation | InsufficientEvidence, with ConfirmedDrift taking
-precedence over InsufficientEvidence taking precedence over EvaluatedNoViolation when a
-notification matches multiple signals (priority 3 > 2 > 1 > the priority-0 no-evidence floor).
-
-DOCUMENTED SIMPLIFICATION (identical to the KQL file): "was this binding open as of the change's
-effective_at" is approximated as "this binding is EVER observed for this principal in the
-queried window", not precisely interval-bounded. The JS reference oracle
-(tests/attack/track3util.js) remains the precise authority.
+precedence over InsufficientEvidence taking precedence over EvaluatedNoViolation. A legitimately
+closed stream is checked BEFORE scope ambiguity/conflict -- suppression is a definitive answer
+regardless of which binding a revocation targeted.
 
 LEGACY-COMPATIBILITY FALLBACKS (telemetry/schema.md): missing mcp.authz.binding_id on .open ->
 a pseudo-binding scoped to (principal_hash, subscription_id); missing
 mcp.subscription.instance_id -> instance_id = principal_hash + ":" + subscription_id
-(principal-scoped, NOT bare subscription_id -- two different principals legitimately reusing the
-identical wire id must not collide onto one instance); missing
-mcp.authz.change.affected_scope -> "unknown" (sole-candidate fallback only, never a blanket
-principal-wide assumption).
+(principal-scoped, NOT bare subscription_id); missing mcp.authz.change.affected_scope ->
+"unknown" (NEVER resolved via candidate count).
 
-ASSUMPTION (carried from the prior revision, unchanged): ingestion is configured so Splunk's
+ASSUMPTION (carried from prior revisions, unchanged): ingestion is configured so Splunk's
 internal _time reflects each event's own `timestamp` field, and the strptime() format string
 assumes ISO-8601 with millisecond precision. Not executed against a live Splunk instance in this
 project -- see detections/README.md "validation tooling used".
@@ -40,46 +47,31 @@ project -- see detections/README.md "validation tooling used".
 index=mcp_security_audit sourcetype=mcp:audit:json
 | eval instance_id=coalesce('mcp.subscription.instance_id', 'principal.id_hash'.":".'mcp.subscription.id')
 | eval key_id='security.hash.key_id'
-
-`comment("--- Opens ---")`
 | eval is_open=if('event.name'=="mcp.subscription.open", 1, 0)
 | eval open_binding_id=if(is_open=1, coalesce('mcp.authz.binding_id', "legacy:"."principal.id_hash".":".'mcp.subscription.id'), null())
 | eval open_required_scope=if(is_open=1, 'mcp.subscription.required_scope', null())
 | eval open_valid_until=if(is_open=1, strptime(coalesce('mcp.authz.valid_until','mcp.authz.grant_expiry'), "%Y-%m-%dT%H:%M:%S.%3QZ"), null())
 | eval open_key_id=if(is_open=1, key_id, null())
 | eval open_time=if(is_open=1, _time, null())
-
-`comment("--- Notifications ---")`
 | eval is_notif=if('event.name'=="mcp.subscription.notification", 1, 0)
 | eval own_binding_id=if(is_notif=1, 'mcp.authz.binding_id', null())
 | eval own_valid_until=if(is_notif=1 AND isnotnull('mcp.authz.binding_id'), strptime('mcp.authz.valid_until', "%Y-%m-%dT%H:%M:%S.%3QZ"), null())
 | eval notif_time=if(is_notif=1, _time, null())
-
-`comment("--- Closes ---")`
 | eval is_close=if('event.name'=="mcp.subscription.close", 1, 0)
 | eval close_time=if(is_close=1, _time, null())
-
-`comment("--- Changes (authoritative, invalidating types only) ---")`
 | eval is_change=if('event.name'=="mcp.subscription.authorization_change" AND 'mcp.authz.change.timing_confidence'=="authoritative" AND ('mcp.authz.change.type'="revoked" OR 'mcp.authz.change.type'="expired" OR 'mcp.authz.change.type'="scope_downgraded"), 1, 0)
-| eval change_effective_at=if(is_change=1, strptime('mcp.authz.change.effective_at', "%Y-%m-%dT%H:%M:%S.%3QZ"), null())
 | eval affected_scope=if(is_change=1, coalesce('mcp.authz.change.affected_scope', "unknown"), null())
+| eval has_effective_at=if(is_change=1, isnotnull('mcp.authz.change.effective_at') AND 'mcp.authz.change.effective_at'!="", 1, 0)
 
-`comment("Materialize EarliestClose: pre-aggregated so multiple close events per instance cannot multiply/mis-suppress downstream joins (same fix as the Track 3 remediation pass)")`
+`comment("Materialize EarliestClose per instance BEFORE any join -- avoids multiplying/mis-suppressing rows when more than one close event exists for the same instance")`
 | eventstats min(close_time) as earliest_close_time by instance_id, "principal.id_hash"
-
-`comment("KnownBindingsByPrincipal / BindingCountByPrincipal: every binding ever observed for a principal, from either a retained open or a proven-rebinding notification's own binding_id")`
-| eval known_binding_id=coalesce(open_binding_id, own_binding_id)
-| eventstats dc(known_binding_id) as candidate_count, values(known_binding_id) as candidates by "principal.id_hash"
 
 `comment("ConflictedBindings: a binding named invalidated by one authoritative change AND named scope_upgraded by another cannot be resolved by picking a side")`
 | eval invalidated_marker=if(is_change=1 AND affected_scope=="binding" AND ('mcp.authz.change.type'="revoked" OR 'mcp.authz.change.type'="expired" OR 'mcp.authz.change.type'="scope_downgraded"), 'mcp.authz.change.affected_binding_ids', null())
 | eval upgraded_marker=if(is_change=1 AND affected_scope=="binding" AND 'mcp.authz.change.type'="scope_upgraded", 'mcp.authz.change.affected_binding_ids', null())
 | eventstats values(invalidated_marker) as all_invalidated_bindings, values(upgraded_marker) as all_upgraded_bindings
 
-`comment("--- NotificationsResolved: per-notification binding/scope context, joined to the SAME instance's open record ---")`
-| eval effective_binding_id_raw=if(is_notif=1, coalesce(own_binding_id, open_binding_id), null())
-| eval effective_valid_until_raw=if(is_notif=1, coalesce(own_valid_until, open_valid_until), null())
-
+`comment("--- NotificationsResolved: per-notification binding/scope/timing context, joined to the SAME instance's own open record (open_time carried through for the precise all_principal_bindings interval check below) ---")`
 | where is_notif=1
 | join type=left instance_id
     [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.open"
@@ -88,13 +80,14 @@ index=mcp_security_audit sourcetype=mcp:audit:json
       | eval open_required_scope2='mcp.subscription.required_scope'
       | eval open_valid_until2=strptime(coalesce('mcp.authz.valid_until','mcp.authz.grant_expiry'), "%Y-%m-%dT%H:%M:%S.%3QZ")
       | eval open_key_id2='security.hash.key_id'
-      | fields instance_id open_binding_id2 open_required_scope2 open_valid_until2 open_key_id2 ]
+      | eval open_time2=_time
+      | fields instance_id open_binding_id2 open_required_scope2 open_valid_until2 open_key_id2 open_time2 ]
 | eval effective_binding_id=coalesce(own_binding_id, open_binding_id2)
 | eval effective_valid_until=if(isnotnull(own_binding_id) AND isnotnull(own_valid_until), own_valid_until, open_valid_until2)
 | eval epoch_mismatch=if(isnotnull(open_key_id2) AND isnotnull(key_id) AND open_key_id2!=key_id, 1, 0)
 | eval is_conflicted=if(isnotnull(effective_binding_id) AND mvfind(all_invalidated_bindings, effective_binding_id)>=0 AND mvfind(all_upgraded_bindings, effective_binding_id)>=0, 1, 0)
 
-`comment("--- Signal 1: expiry leg. Suppressed crossings are EvaluatedNoViolation, never silently dropped. ---")`
+`comment("--- Signal 1: expiry leg. A suppressed (closed-before) crossing is EvaluatedNoViolation, never silently dropped. ---")`
 | eval expiry_applicable=if(isnotnull(effective_valid_until) AND epoch_mismatch=0, 1, 0)
 | eval expiry_crossed=if(expiry_applicable=1 AND notif_time>effective_valid_until, 1, 0)
 | eval expiry_suppressed=if(isnotnull(earliest_close_time) AND earliest_close_time<=notif_time, 1, 0)
@@ -102,26 +95,41 @@ index=mcp_security_audit sourcetype=mcp:audit:json
 | eval expiry_priority=case(expiry_outcome=="ConfirmedDrift", 3, expiry_outcome=="EvaluatedNoViolation", 1, 1=1, null())
 
 `comment("--- Signal 2: epoch mismatch ---")`
-| eval epoch_outcome=if(epoch_mismatch=1, "InsufficientEvidence", null())
 | eval epoch_priority=if(epoch_mismatch=1, 2, null())
 
-`comment("--- Signal 3: revocation/downgrade leg -- join to every authoritative change for this principal ---")`
+`comment("--- Signal 2b: incomplete timing evidence -- a change record claiming authoritative timing but omitting effective_at is self-contradictory; detected explicitly here so it surfaces as InsufficientEvidence instead of silently failing a later timing comparison (fixture V13-05) ---")`
 | join type=left "principal.id_hash"
     [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.authorization_change"
         "mcp.authz.change.timing_confidence"="authoritative"
         ("mcp.authz.change.type"="revoked" OR "mcp.authz.change.type"="expired" OR "mcp.authz.change.type"="scope_downgraded")
+        NOT "mcp.authz.change.effective_at"=*
+      | eval has_malformed_timing_change=1
+      | stats max(has_malformed_timing_change) as has_malformed_timing_change by "principal.id_hash" ]
+| eval malformed_timing_priority=if(has_malformed_timing_change=1, 2, null())
+
+`comment("--- Signal 3: revocation/downgrade leg -- join to every authoritative, timing-complete change for this principal. Suppression and conflict are resolved BEFORE scope -- a legitimately closed stream needs no scope resolution at all. ---")`
+| join type=left "principal.id_hash"
+    [ search index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.subscription.authorization_change"
+        "mcp.authz.change.timing_confidence"="authoritative"
+        ("mcp.authz.change.type"="revoked" OR "mcp.authz.change.type"="expired" OR "mcp.authz.change.type"="scope_downgraded")
+        "mcp.authz.change.effective_at"=*
       | eval change_effective_at2=strptime('mcp.authz.change.effective_at', "%Y-%m-%dT%H:%M:%S.%3QZ")
       | eval affected_scope2=coalesce('mcp.authz.change.affected_scope', "unknown")
       | rename "mcp.authz.change.affected_binding_ids" as affected_binding_ids2, "mcp.authz.change.removed_scope" as removed_scope2,
           "mcp.authz.change.type" as change_type2, "mcp.authz.change.source" as change_source2
       | fields "principal.id_hash" change_effective_at2 affected_scope2 affected_binding_ids2 removed_scope2 change_type2 change_source2 ]
+| eval rev_crossed=if(notif_time>change_effective_at2, 1, 0)
+| eval rev_suppressed=if(isnotnull(earliest_close_time) AND earliest_close_time<=notif_time, 1, 0)
+`comment("Precise effective-time interval check for all_principal_bindings: the binding must have been open AND not already closed by the time the change took effect -- not merely ever observed anywhere in the window (fixture V13-06)")`
+| eval binding_existed_at_effective_at=if(isnull(open_time2) OR open_time2<=change_effective_at2, 1, 0)
+| eval binding_already_closed_by_effective_at=if(isnotnull(earliest_close_time) AND earliest_close_time<=change_effective_at2, 1, 0)
 | eval rev_applies=case(
+    rev_crossed=0, "not_yet",
+    rev_suppressed=1, "suppressed",
     is_conflicted=1, "conflict",
-    affected_scope2=="all_principal_bindings", "yes",
-    affected_scope2=="binding", if(mvfind(affected_binding_ids2, effective_binding_id)>=0, "yes", "no"),
-    candidate_count==1, if(isnull(effective_binding_id) OR mvfind(candidates, effective_binding_id)>=0, "yes", "no"),
-    candidate_count>1, "ambiguous",
-    1=1, "no")
+    affected_scope2=="all_principal_bindings", if(binding_existed_at_effective_at=1 AND binding_already_closed_by_effective_at=0, "yes", "no"),
+    affected_scope2=="binding", if(isnull(effective_binding_id), "ambiguous", if(mvfind(affected_binding_ids2, effective_binding_id)>=0, "yes", "no")),
+    1=1, "ambiguous")
 `comment("SPL has no built-in set-intersection over two multivalue fields; this reference query checks whether EITHER side's first scope tag appears in the other -- correct for this project's single-tag fixtures, an approximation for genuinely multi-tag scopes. The JS oracle (tests/attack/track3util.js) implements the precise any-element intersection and remains the authority for that case.")`
 | eval rev_scope_ok=case(
     rev_applies!="yes", null(),
@@ -129,43 +137,46 @@ index=mcp_security_audit sourcetype=mcp:audit:json
     isnull(open_required_scope2) OR isnull(removed_scope2), "missing",
     mvfind(removed_scope2, mvindex(open_required_scope2,0))>=0 OR mvfind(open_required_scope2, mvindex(removed_scope2,0))>=0, "yes",
     1=1, "irrelevant")
-| eval rev_crossed=if(rev_applies=="yes" AND notif_time>change_effective_at2, 1, 0)
-| eval rev_suppressed=if(isnotnull(earliest_close_time) AND earliest_close_time<=notif_time, 1, 0)
 | eval rev_outcome=case(
+    rev_applies=="not_yet", null(),
+    rev_applies=="suppressed", "EvaluatedNoViolation",
     rev_applies=="ambiguous", "InsufficientEvidence",
     rev_applies=="conflict", "InsufficientEvidence",
+    rev_applies=="no", null(),
     rev_applies=="yes" AND rev_scope_ok=="missing", "InsufficientEvidence",
     rev_applies=="yes" AND rev_scope_ok=="irrelevant", "EvaluatedNoViolation",
-    rev_applies=="yes" AND rev_crossed=1 AND rev_suppressed=0, "ConfirmedDrift",
-    rev_applies=="yes", "EvaluatedNoViolation",
+    rev_applies=="yes", "ConfirmedDrift",
     1=1, null())
 | eval rev_reason=case(rev_applies=="ambiguous", "ambiguous_scope", rev_applies=="conflict", "conflicting_evidence", rev_applies=="yes" AND rev_scope_ok=="missing", "missing_scope_evidence", 1=1, "")
 | eval rev_priority=case(rev_outcome=="ConfirmedDrift", 3, rev_outcome=="InsufficientEvidence", 2, rev_outcome=="EvaluatedNoViolation", 1, 1=1, null())
 
-`comment("--- Combine every signal per notification: the highest priority wins; ties at the max (e.g. revocation AND expiry both ConfirmedDrift) are both retained by NOT collapsing rows from the change-join, since each change row produced its own rev_outcome/rev_priority alongside the single expiry_outcome/expiry_priority computed once per notification. ---")`
+`comment("--- Combine every signal per notification: the highest priority wins; ties at the max are all retained (a notification confirmed on two independent boundaries, e.g. revocation AND expiry, keeps both) ---")`
 | eval overall_priority=case(
-    coalesce(expiry_priority,0)>=coalesce(rev_priority,0) AND coalesce(expiry_priority,0)>=coalesce(epoch_priority,0), coalesce(expiry_priority,0),
-    coalesce(rev_priority,0)>=coalesce(epoch_priority,0), coalesce(rev_priority,0),
-    1=1, coalesce(epoch_priority,0))
+    coalesce(expiry_priority,0)>=coalesce(rev_priority,0) AND coalesce(expiry_priority,0)>=coalesce(epoch_priority,0) AND coalesce(expiry_priority,0)>=coalesce(malformed_timing_priority,0), coalesce(expiry_priority,0),
+    coalesce(rev_priority,0)>=coalesce(epoch_priority,0) AND coalesce(rev_priority,0)>=coalesce(malformed_timing_priority,0), coalesce(rev_priority,0),
+    coalesce(epoch_priority,0)>=coalesce(malformed_timing_priority,0), coalesce(epoch_priority,0),
+    1=1, coalesce(malformed_timing_priority,0))
 | eval Outcome=case(
-    overall_priority=3 AND rev_priority=3, "ConfirmedDrift",
-    overall_priority=3 AND expiry_priority=3, "ConfirmedDrift",
-    overall_priority=2 AND rev_priority=2, "InsufficientEvidence",
-    overall_priority=2 AND epoch_priority=2, "InsufficientEvidence",
+    overall_priority=3, "ConfirmedDrift",
+    overall_priority=2, "InsufficientEvidence",
     overall_priority=1, "EvaluatedNoViolation",
     1=1, "InsufficientEvidence")
-| eval Reason=case(Outcome=="InsufficientEvidence" AND overall_priority=2 AND isnotnull(rev_reason) AND rev_reason!="", rev_reason, Outcome=="InsufficientEvidence" AND epoch_priority=2, "incompatible_hash_epoch", Outcome=="InsufficientEvidence" AND overall_priority=0, "no_invalidity_evidence", 1=1, "")
+| eval Reason=case(
+    Outcome=="InsufficientEvidence" AND overall_priority=2 AND rev_priority=2 AND isnotnull(rev_reason) AND rev_reason!="", rev_reason,
+    Outcome=="InsufficientEvidence" AND overall_priority=2 AND epoch_priority=2, "incompatible_hash_epoch",
+    Outcome=="InsufficientEvidence" AND overall_priority=2 AND malformed_timing_priority=2, "incomplete_timing_evidence",
+    Outcome=="InsufficientEvidence" AND overall_priority=0, "no_invalidity_evidence",
+    1=1, "")
 | eval Boundary=case(overall_priority=3 AND rev_priority=3, "effective_at", overall_priority=3 AND expiry_priority=3, "valid_until", 1=1, "")
 | eval BoundaryTime=case(Boundary=="effective_at", strftime(change_effective_at2, "%Y-%m-%dT%H:%M:%S.%3QZ"), Boundary=="valid_until", strftime(effective_valid_until, "%Y-%m-%dT%H:%M:%S.%3QZ"), 1=1, "")
 | eval Severity=case(Outcome=="ConfirmedDrift", "High", Outcome=="InsufficientEvidence", "Medium", 1=1, "Informational")
 | eval DetectionTrack="Track3_SubscriptionAuthorizationDrift"
 
-`comment("Keep exactly one row per (instance, notification) at the winning priority -- when the revocation leg produced multiple change-join rows, keep only those at the overall max so a single genuinely-ambiguous or genuinely-confirmed match isn't diluted by unrelated lower-priority change rows for the same notification.")`
+`comment("Keep exactly one row per (instance, notification) at the winning priority")`
 | eval row_priority=case(Outcome=="ConfirmedDrift", 3, Outcome=="InsufficientEvidence", 2, Outcome=="EvaluatedNoViolation", 1, 1=1, 0)
 | eventstats max(row_priority) as max_row_priority by instance_id, notif_time
 | where row_priority=max_row_priority
 | dedup instance_id notif_time Outcome Boundary BoundaryTime
-
 | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash, "mcp.subscription.notification_type" as notification_type
 | table notif_time Outcome Severity DetectionTrack instance_id subscription_id principal_hash notification_type effective_binding_id Boundary BoundaryTime change_type2 change_source2 Reason
 | rename effective_binding_id as BindingId, change_type2 as AuthzChangeType, change_source2 as AuthzChangeSource
@@ -174,11 +185,9 @@ index=mcp_security_audit sourcetype=mcp:audit:json
 ```
 -----------------------------------------------------------------------------------------
 LOW-CONFIDENCE / INFORMATIONAL ONLY -- detected_at-only timing. Never promoted into the query
-above at all (the base `is_change` extraction filters to timing_confidence="authoritative"); a
-detected_at-only signal produces no revocation-leg row and falls through to the
-InsufficientEvidence("no_invalidity_evidence") floor if nothing else applies, consistent with
-telemetry/correlation.md. Build a separate saved search over timing_confidence="detected_only"
-if your deployment wants that hunting visibility -- intentionally not unioned into the primary
-query above.
+above at all; a detected_at-only signal produces no revocation-leg row and falls through to the
+InsufficientEvidence("no_invalidity_evidence") floor if nothing else applies. Build a separate
+saved search over timing_confidence="detected_only" if your deployment wants that hunting
+visibility -- intentionally not unioned into the primary query above.
 -----------------------------------------------------------------------------------------
 ```

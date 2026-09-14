@@ -287,11 +287,21 @@ explicitly low-confidence/informational query, never merged into the primary res
   is not "same authorization scope" — a principal can hold multiple independent,
   independently-revocable grants. Fixed via new fields `mcp.authz.binding_id` and
   `mcp.authz.change.affected_scope`/`affected_binding_ids` (no subscription-id field on
-  `authorization_change` was needed, and the malformed-telemetry case fixture V6-02 covers
-  remains unaffected). See fixture V12-13 and `docs/validation-report.md`, "Track 3 remediation
-  pass, part 2." **Deployment prerequisite this introduces**: a deployment that never emits the
-  new fields gets `insufficient_evidence` on genuine ambiguity (the safe default) rather than a
-  fully resolved answer.
+  `authorization_change` was needed). See fixture V12-13 and `docs/validation-report.md`, "Track
+  3 remediation pass, part 2." **Deployment prerequisite this introduces**: a deployment that
+  never emits the new fields gets `insufficient_evidence` on genuine ambiguity (the safe default)
+  rather than a fully resolved answer.
+- **[Code defect, FIXED in a third remediation pass] A "sole-candidate" scope inference and an
+  "ever observed" timing approximation, both introduced by the second pass, are removed.** The
+  second pass's fix still resolved an `affected_scope = unknown` change to a confirmed finding
+  whenever exactly one binding was observed for a principal (still an inference, not evidence —
+  fixture V13-03), and approximated `affected_scope = all_principal_bindings` as "ever observed
+  anywhere in the queried window" rather than a precise effective-time interval (fixture V13-06).
+  Both fixed in KQL, SPL, and the JS oracle. **This reclassifies fixture V6-02** (malformed
+  telemetry missing `mcp.subscription.id`, with no scope evidence on its revocation either) from
+  a claimed "partially detectable via principal-only join" finding to `insufficient_evidence` —
+  the honest answer once candidate-count inference is no longer permitted. See
+  `docs/validation-report.md`, "Track 3 remediation pass, part 3."
 - **[Scope boundary, still not fully closed] A scope downgrade's relevance to a given
   subscription cannot be determined without both `mcp.subscription.required_scope` and
   `mcp.authz.change.removed_scope`.** Either missing reports `insufficient_evidence`
