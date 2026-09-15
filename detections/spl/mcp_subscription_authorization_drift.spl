@@ -38,6 +38,20 @@ resolve (fixture V14-07: Splunk's field model cannot distinguish an explicitly-e
 from an absent one, unlike KQL's dynamic type -- a genuine, named SPL/Splunk constraint, not a
 silently-swept-under approximation).
 
+TRACK 3 REMEDIATION PASS, PART 5 (this revision) fixes a row-duplication defect native execution
+against the KQL query (a live Kusto engine -- see docs/validation-report.md "Track 3 remediation
+pass, part 5") found and this file's structure mirrors: whenever a notification independently
+satisfied TWO OR MORE EvaluatedNoViolation-tier signals at once (e.g. a not-yet-crossed
+valid_until AND a scope-irrelevant downgrade on the SAME notification -- fixtures V11-07,
+V14-04, V14-05), one Informational-severity row was produced PER contributing signal instead of
+one row per notification. Outcome values were never wrong, only the row count. Fixed by
+collecting every contributing reason (mvappend()/eventstats values(), relying on Splunk's
+documented null-dropping behavior for mvappend -- not independently verified against a live
+Splunk instance this pass, see README.md "Native execution") and collapsing to one row via an
+unambiguous notification identity (instance_id + subscription_id + principal_hash + notif_time +
+notification_type -- never notif_time alone). ConfirmedDrift and InsufficientEvidence rows are
+explicitly untouched by this fix.
+
 THREE-OUTCOME REPORTING: every evaluated notification produces exactly one Outcome:
 ConfirmedDrift | EvaluatedNoViolation | InsufficientEvidence, with ConfirmedDrift taking
 precedence over InsufficientEvidence taking precedence over EvaluatedNoViolation. A legitimately
@@ -164,6 +178,9 @@ index=mcp_security_audit sourcetype=mcp:audit:json
     1=1, null())
 | eval rev_reason=case(rev_applies=="ambiguous", "ambiguous_scope", rev_applies=="conflict", "conflicting_evidence", rev_applies=="yes" AND rev_scope_ok=="missing", "missing_scope_evidence", 1=1, "")
 | eval rev_priority=case(rev_outcome=="ConfirmedDrift", 3, rev_outcome=="InsufficientEvidence", 2, rev_outcome=="EvaluatedNoViolation", 1, 1=1, null())
+`comment("Per-signal EvaluatedNoViolation reason tags (Track 3 remediation pass, part 5) -- kept independent of which signal 'wins' overall_priority below, so both can be collected together when a notification satisfies more than one at once (fixtures V11-07/V14-04/V14-05)")`
+| eval expiry_novi_reason=case(expiry_priority=1, case(expiry_crossed=0, "expiry_not_yet_reached", expiry_crossed=1 AND expiry_suppressed=1, "expiry_suppressed_by_close", 1=1, ""), 1=1, "")
+| eval rev_novi_reason=case(rev_priority=1, case(rev_applies=="suppressed", "revocation_suppressed_by_close", rev_applies=="yes" AND rev_scope_ok=="irrelevant", "scope_downgrade_irrelevant", 1=1, ""), 1=1, "")
 
 `comment("--- Combine every signal per notification: the highest priority wins; ties at the max are all retained (a notification confirmed on two independent boundaries, e.g. revocation AND expiry, keeps both) ---")`
 | eval overall_priority=case(
@@ -187,11 +204,25 @@ index=mcp_security_audit sourcetype=mcp:audit:json
 | eval Severity=case(Outcome=="ConfirmedDrift", "High", Outcome=="InsufficientEvidence", "Medium", 1=1, "Informational")
 | eval DetectionTrack="Track3_SubscriptionAuthorizationDrift"
 
-`comment("Keep exactly one row per (instance, notification) at the winning priority")`
+`comment("EvaluatedNoViolation ties collapse to ONE row per notification, retaining every contributing reason (Track 3 remediation pass, part 5 -- see docs/validation-report.md). A prior revision could emit one Informational-severity row PER independently-clean signal for the SAME notification (e.g. a not-yet-crossed valid_until AND a scope-irrelevant downgrade at once), confirmed via native KQL execution against fixtures V11-07/V14-04/V14-05 and inspected here by direct code parallel (this file is a structural port of the KQL query, not independently re-derived -- native SPL execution of this specific fix remains pending, see README.md). ConfirmedDrift and InsufficientEvidence rows are untouched by this block: mvappend()/values() only ever see a non-null contribution when overall_priority=1 (EvaluatedNoViolation), so higher- or lower-priority rows never feed into all_novi_reasons. Grouped by an unambiguous notification identity -- instance_id + mcp.subscription.id + principal.id_hash + notif_time + mcp.subscription.notification_type -- never notif_time alone, matching the KQL query's identical compound key.")`
+| eval per_row_novi_reasons=mvappend(
+    if(overall_priority=1 AND expiry_priority=1, expiry_novi_reason, null()),
+    if(overall_priority=1 AND rev_priority=1, rev_novi_reason, null()))
+| eventstats values(per_row_novi_reasons) as all_novi_reasons, values(change_type2) as novi_change_types, values(change_source2) as novi_change_sources
+    by instance_id, "mcp.subscription.id", "principal.id_hash", notif_time, "mcp.subscription.notification_type"
+| eval Reason=if(Outcome=="EvaluatedNoViolation", mvjoin(all_novi_reasons, "; "), Reason)
+`comment("A single (untied) EvaluatedNoViolation row keeps its own change_type/change_source; a genuine tie across DIFFERENT changes blanks them rather than arbitrarily picking one -- mirrors the KQL query's any()-for-single-row / blank-for-tie handling")`
+| eval change_type2=if(Outcome=="EvaluatedNoViolation", if(mvcount(novi_change_types)<=1, mvindex(novi_change_types,0), ""), change_type2)
+| eval change_source2=if(Outcome=="EvaluatedNoViolation", if(mvcount(novi_change_sources)<=1, mvindex(novi_change_sources,0), ""), change_source2)
+
+`comment("Keep exactly one row per (instance, notification) at the winning priority. EvaluatedNoViolation collapses fully via the identity fields alone (Reason above already carries every contributing reason); ConfirmedDrift/InsufficientEvidence keep their existing per-(Outcome,Boundary,BoundaryTime,change) distinctness, unchanged from before this pass.")`
 | eval row_priority=case(Outcome=="ConfirmedDrift", 3, Outcome=="InsufficientEvidence", 2, Outcome=="EvaluatedNoViolation", 1, 1=1, 0)
-| eventstats max(row_priority) as max_row_priority by instance_id, notif_time
+| eventstats max(row_priority) as max_row_priority by instance_id, "mcp.subscription.id", "principal.id_hash", notif_time, "mcp.subscription.notification_type"
 | where row_priority=max_row_priority
-| dedup instance_id notif_time Outcome Boundary BoundaryTime
+| eval dedup_key=if(Outcome=="EvaluatedNoViolation",
+    instance_id."|".'mcp.subscription.id'."|".'principal.id_hash'."|".notif_time."|".'mcp.subscription.notification_type',
+    instance_id."|".'mcp.subscription.id'."|".'principal.id_hash'."|".notif_time."|".'mcp.subscription.notification_type'."|".Outcome."|".Boundary."|".BoundaryTime."|".change_type2."|".change_source2)
+| dedup dedup_key
 | rename "mcp.subscription.id" as subscription_id, "principal.id_hash" as principal_hash, "mcp.subscription.notification_type" as notification_type
 | table notif_time Outcome Severity DetectionTrack instance_id subscription_id principal_hash notification_type effective_binding_id Boundary BoundaryTime change_type2 change_source2 Reason
 | rename effective_binding_id as BindingId, change_type2 as AuthzChangeType, change_source2 as AuthzChangeSource

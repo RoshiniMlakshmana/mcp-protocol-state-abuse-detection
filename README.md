@@ -18,12 +18,23 @@ before deploying anything here.
   (`tools/harness/`), not a live MCP server or an official-SDK wire capture — see
   `docs/sdk-discrepancy.md` for exactly what was verified against real, current SDK source code
   and why the harness exists.
-- **Native execution against a real Microsoft Sentinel workspace or Splunk instance, and
-  official Sigma CLI / pySigma conversion validation, have not been performed and remain
-  pending unless independently verified.** KQL and SPL were hand-written and hand-reviewed
-  against documented query-language semantics and this project's own JS test oracle — never
-  executed against live backend software (Python, required for the official Sigma tooling, was
-  unavailable in the development environment).
+- **Native execution status (precise, read carefully — three different claims, not one):**
+  (1) **KQL has been natively executed** against a real Kusto query engine — Microsoft's local,
+  free, perpetual "Kusto emulator" Docker image (`mcr.microsoft.com/azuredataexplorer/kustainer-linux`,
+  no account/subscription/trial required) — for **25 representative Track 3/1/2 fixtures**, all
+  producing the expected outcome; full reproducible evidence (exact engine version, exact
+  executed queries, raw responses, converter scripts) is committed under
+  `evidence/native-execution/`. This is **native KQL query execution only** — it is **not** a
+  Microsoft Sentinel deployment: no workspace, no scheduled analytics rule, no incident/alert
+  pipeline, no Log Analytics ingestion mapping, no RBAC. (2) **Native execution against the full
+  106-scenario corpus, against SPL (no Splunk instance was started), and against a real Sentinel
+  workspace/Splunk instance all remain not performed.** SPL was hand-written and aligned to the
+  verified KQL fixes by direct structural parallel, never executed against live Splunk. (3)
+  **Official Sigma CLI / pySigma conversion validation has not been performed** (Python, required
+  for the official Sigma tooling, was unavailable in the development environment) — Sigma was
+  hand-reviewed against the documented specification only. See `docs/validation-report.md`,
+  "Track 3 remediation pass, part 5" and `evidence/native-execution/README.md` for the full,
+  itemized account of exactly what was and was not run.
 - **These detections require a custom MCP security audit telemetry contract**
   (`telemetry/schema.md`) that does not exist by default in Sentinel, Splunk, or any
   OpenTelemetry deployment — see `telemetry/field-mapping.md`. Nothing here fires against
@@ -34,11 +45,13 @@ before deploying anything here.
   "Investigation fields" should be checked before treating a hit as confirmed malicious.
 - **Track 3's Sigma correlation rule is best-effort hunting content, not semantically
   equivalent to the KQL/SPL implementations** for that track — see "Operational limitations."
-- **"KQL and SPL equivalence" for Track 3 means two independently-coded JS models of each
-  language's own written semantics agree row-for-row on the shared corpus — not that either was
-  executed as native KQL or SPL against a real backend.** See `tests/validation/language_equivalence.test.js`
-  and "Native execution" above. A prior version of this test compared one oracle function to
-  itself and has been replaced.
+- **"KQL and SPL equivalence" for Track 3, as measured across the FULL 106-scenario corpus,
+  means two independently-coded JS models of each language's own written semantics agree
+  row-for-row — not that either was executed as native KQL or SPL against a real backend at that
+  scale.** See `tests/validation/language_equivalence.test.js` and "Native execution status"
+  above. A prior version of this test compared one oracle function to itself and has been
+  replaced. (A separate, smaller native-execution pass — 25 fixtures, real KQL engine, not this
+  full-corpus comparison — has since been performed for KQL specifically; see above.)
 - **Track 3 now resolves revocation scope to a specific authorization binding, not a principal.**
   A scope-aware correction added `mcp.authz.binding_id` and
   `mcp.authz.change.affected_scope`/`affected_binding_ids`/`removed_scope` (all new,
@@ -55,10 +68,12 @@ before deploying anything here.
   first-scope-tag-only comparison with an exact, order-independent multivalue intersection,
   surfacing one genuine, unfixable SPL/Splunk platform limitation (an explicitly-empty scope list
   cannot be distinguished from an absent one in classic Splunk field extraction) that is named
-  and tested for, not silently approximated away. See "Operational limitations",
-  `docs/validation-report.md` "Track 3 remediation pass, part 2", "part 3", and "part 4", and
-  fixture V11-11 (retained, unmodified, as a worked example of legacy telemetry that still cannot
-  be resolved without the new fields).
+  and tested for, not silently approximated away. A fifth pass then moved to native execution
+  against a real Kusto engine and found (and fixed) a row-duplication defect on
+  `evaluated_no_violation` ties — natively verified for KQL, aligned by code parallel for SPL.
+  See "Operational limitations", `docs/validation-report.md` "Track 3 remediation pass, part 2"
+  through "part 5", and fixture V11-11 (retained, unmodified, as a worked example of legacy
+  telemetry that still cannot be resolved without the new fields).
 - **No claim of proven novelty, and no claim of detections.ai acceptance, is made anywhere in
   this project.** `publication/novelty-check.md` documents a specific research pass, not a
   guarantee that no prior art exists; this project has not been submitted to or accepted by
@@ -145,9 +160,9 @@ result never does.
 | Validation/stress (Block 6) | 75 | 351 |
 | **Total** | **106** | **551** |
 
-**139/139 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
+**140/140 automated tests pass** (`node --test tests/normal/*.test.js tests/attack/*.test.js
 tests/detections/*.test.js tests/validation/*.test.js`), fully deterministic on regeneration.
-This count reflects four Track 3 remediation passes: (1) SPL join-key/max=0 fixes, oracle
+This count reflects five Track 3 remediation passes: (1) SPL join-key/max=0 fixes, oracle
 multi-boundary/independent-leg fixes, a genuine two-model language-equivalence replacement, and
 11 regression fixtures (V11-01..V11-11); (2) a scope-aware correction resolving revocation
 scope to a specific authorization binding rather than a principal, adding six new project-defined
@@ -159,8 +174,11 @@ removed a subtler unsound "sole-candidate" scope inference part 2 still carried,
 fixtures (V13-01..V13-06); (4) a pass fixing the SPL scope-downgrade relevance check's
 first-scope-tag-only approximation with an exact multivalue intersection, adding 8 further
 fixtures (V14-01..V14-08) and naming one genuine, unresolved SPL/Splunk platform limitation
-(V14-07) rather than approximating past it — see `docs/validation-report.md` for the full
-before/after account. Re-run the suite yourself rather than assuming any specific number stays
+(V14-07) rather than approximating past it; (5) a native-execution pass against a real Kusto
+engine (25 representative fixtures, all passing) that found and fixed a row-duplication defect
+on `evaluated_no_violation` ties (fixtures V11-07, V14-04, V14-05) — see `docs/validation-report.md`
+for the full before/after account, and `evidence/native-execution/` for the reproducible native
+execution evidence. Re-run the suite yourself rather than assuming any specific number stays
 fixed across future changes.
 
 Controlled-corpus precision/recall is 1.000/1.000 for all three tracks under their declared
@@ -254,6 +272,16 @@ contract, not something a code change here can close).
   `evaluated_no_violation`; the real SPL query reports `insufficient_evidence` instead, and this
   one disagreement is asserted BY NAME in `tests/validation/language_equivalence.test.js` rather
   than silently folded into a "fully equivalent" claim or silently excluded from the corpus.
+- **[Code defect, FIXED in a fifth remediation pass, natively verified for KQL] A notification
+  satisfying two or more `evaluated_no_violation` conditions at once produced one row PER
+  condition instead of one row for the notification.** Found via native execution against a real
+  Kusto engine (fixtures V11-07, V14-04, V14-05 each went from 2 rows to 1). Outcome values were
+  never wrong — only the row count. Fixed by collapsing such ties to one row, retaining every
+  contributing reason, grouped by an unambiguous notification identity (never timestamp alone).
+  `ConfirmedDrift`/`InsufficientEvidence` ties are explicitly untouched. KQL is
+  native-execution-verified; SPL is aligned by code parallel only (not independently executed —
+  no Splunk instance was started). See `docs/validation-report.md`, "Track 3 remediation pass,
+  part 5", and `evidence/native-execution/`.
 - **[Deployment prerequisite] Collector canonicalization can create Track 1 artifacts.** A
   collector that hashes a Base64-sentinel-encoded routing header without decoding it first will
   manufacture a false conflict for an identical underlying value. Treat
@@ -284,9 +312,14 @@ contract, not something a code change here can close).
   closing event. The Sigma correlation rule is retained as best-effort hunting content and is
   documented, in its own file, as **not** semantically equivalent to the authoritative KQL/SPL
   implementations.
-- **[Validation gap] Native execution against a real Microsoft Sentinel workspace or Splunk
-  instance remains pending.** Nothing in this remediation pass changes that — all fixes were
-  verified via the JS models/oracle described above, never against a live backend.
+- **[Validation gap, narrowed but not closed] Native execution against a real Microsoft Sentinel
+  workspace or Splunk instance remains pending; native execution against the FULL corpus and
+  against SPL at all also remains pending.** A fifth Track 3 remediation pass DID natively
+  execute the real KQL query against a real Kusto engine (Microsoft's local, free, perpetual
+  Kusto emulator — no account/trial) for 25 representative fixtures — see "Native execution
+  status" above and `evidence/native-execution/`. Everything else (the remaining ~81 corpus
+  scenarios, all of SPL, and any Sentinel/Splunk deployment) was verified only via the JS
+  models/oracle described above, never against a live backend.
 
 ## Reproduction
 
@@ -317,7 +350,7 @@ docs/            threat model, invariants, false-positive analysis, evasion limi
 telemetry/       the locked audit telemetry contract (schema, field mapping, correlation logic)
 data/            normal / attack / validation corpora (JSONL) + manifests + per-corpus READMEs
 tools/harness/   deterministic corpus generators + shared hashing/protocol-validation helpers
-tests/           Node test suites (normal, attack, detections, validation) — 139 tests
+tests/           Node test suites (normal, attack, detections, validation) — 140 tests
 detections/      Sigma / KQL / SPL rules + field-mapping + detection documentation
 publication/     detections.ai / GitHub Sync / Intel Exchange / novelty-check materials (this block)
 ```

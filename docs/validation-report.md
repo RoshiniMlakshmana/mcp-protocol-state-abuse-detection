@@ -67,6 +67,19 @@ corrected to honestly reflect a genuine SPL/Splunk platform constraint the fix c
 the one exact unresolved case this pass could not fix in SPL, named rather than approximated
 away).
 
+**Track 3 remediation pass, part 5 — native KQL execution; duplicate-row fix (this document's
+sixth revision):** a fifth pass moved from JS-model comparison to actual native execution against
+a real Kusto engine (Microsoft's local, free, perpetual Kusto emulator — no account, no trial;
+see `evidence/native-execution/`) for 25 representative fixtures. All 25 produced the expected
+outcome, but native execution surfaced a genuine, previously-undetected row-duplication defect:
+a notification independently satisfying two or more `EvaluatedNoViolation`-tier conditions at
+once produced one Informational-severity row per contributing signal instead of one row per
+notification (fixtures V11-07, V14-04, V14-05). Fixed by collapsing such ties to exactly one row
+per notification, retaining every contributing reason, in the JS oracle, KQL, and SPL alike; this
+is native-execution-verified for KQL only — SPL was aligned by code parallel, not independently
+executed (no Splunk instance was started this pass). See "Track 3 remediation pass, part 5" below
+for the full account, including honest before/after re-execution of the exact pre-fix query text.
+
 **Post-hoc audit correction (applied to this document):** an earlier version of this report
 presented a single "full stress-test corpus" precision/recall table showing FP=0 across the
 board, while separately describing V1-08, V5-02, and V5-09 in prose as benign-but-firing
@@ -358,10 +371,15 @@ It has been replaced with two **independently-coded JS models**, `kqlModelResult
 independently (different data structures, different code shape — see the file's own header
 comment), compared by **outcome per notification** (`confirmed_drift`/`evaluated_no_violation`/
 `insufficient_evidence`, not just a fired/not-fired boolean) across the full stress corpus.
-**This disclaimer applies throughout this section: neither model executes actual KQL or SPL, and
-neither runs against a real Sentinel/Splunk backend — "equivalent" means "these two
-independently-authored models of each language's documented semantics agree," which is the
-strongest claim achievable without native execution (still pending; see README.md).** Both
+**This disclaimer applies throughout this section: neither model executes actual KQL or SPL
+against the full 106-scenario corpus, and neither runs against a real Sentinel/Splunk backend
+— "equivalent" here means "these two independently-authored models of each language's
+documented semantics agree" across the FULL corpus, which remains the applicable claim at that
+scale. A SEPARATE, smaller native-execution pass (25 representative fixtures, real KQL engine,
+NOT this full-corpus JS-model comparison) has since been performed for KQL specifically — see
+"Track 3 remediation pass, part 5" below and `evidence/native-execution/`; SPL native execution
+remains not performed. Do not read the native-execution pass as extending to the full corpus, or
+to SPL, or to a Sentinel deployment.** Both
 models implement the precise, interval-bounded resolution algorithm the real KQL/SPL queries use
 (part 3's fix; the earlier "ever observed for this principal" approximation this paragraph used
 to describe here was corrected in that pass and this stale sentence was left unfixed until part
@@ -806,6 +824,116 @@ approximation, it is not treated as fixed:
   pass, since it would require a new telemetry field, not a query fix, and is recorded here as
   future work rather than invented under this instruction's constraints.
 
+## Track 3 remediation pass, part 5 (native KQL execution; duplicate-row fix)
+
+A fifth pass moved from JS-model comparison to **actual native query execution** for the first
+time in this project, using Microsoft's official local Kusto emulator (Docker image
+`mcr.microsoft.com/azuredataexplorer/kustainer-linux`, `BuildVersion 1.0.9753.23211`) — a free,
+perpetual, local engine requiring only a plain `ACCEPT_EULA=Y` Docker flag, no account, no
+subscription, no trial. **This is native KQL query execution, not a Sentinel deployment**: no
+workspace, no scheduled analytics rule, no incident/alert pipeline, no Log Analytics ingestion
+mapping was involved or is claimed. Full reproducible evidence — the exact engine version, the
+exact executed query text per fixture, the raw JSON responses, and the converter scripts that
+built the inputs — is committed under `evidence/native-execution/`.
+
+### What was executed, and what was not
+
+25 representative fixtures were run against the real, unmodified `.kql` query text (only the
+input source — a `datatable(...)` literal built mechanically from the real JSONL fixtures — was
+adapted, never the query body): the 8 `V14-01`..`V14-08` exact-intersection fixtures, 10 further
+Track 3 fixtures spanning join-key, malformed-timing, and precise-interval regressions
+(`V11-01`, `V11-02`, `V11-03`, `V11-07`, `V12-01`, `V12-13`, `V13-01`, `V13-03`, `V13-05`,
+`V13-06`), and 7 Track 1/Track 2 fixtures (`A1`, `A6`, `A11`, `A17` for Track 1; `A7`, `A11`,
+`A17` for Track 2). **All 25 produced the expected outcome.** This is 25 representative
+fixtures, **not** the full 106-scenario corpus, and it covers KQL only — **SPL was not natively
+executed** (no local Splunk instance was started this pass; see "One remaining, explicitly
+deferred item" below). Native execution of the full corpus, and of a real Sentinel
+ingestion/scheduled-rule/alert pipeline, both remain not performed.
+
+### A real defect native execution found: duplicate `EvaluatedNoViolation` rows
+
+Native execution surfaced a genuine row-count defect no prior JS-model comparison had
+surfaced, because `tests/validation/language_equivalence.test.js`'s `kqlModelResults`/
+`splModelResults` never tracked row count at all (only a single winning outcome per
+notification) — the real KQL query's `AllSignals` union-of-independently-computed-tables design
+did track multiplicity, and for good reason at the `ConfirmedDrift` tier (see "ties at max
+priority ALL retained" throughout this document), but the SAME mechanism also applied,
+unintentionally, to the `EvaluatedNoViolation` tier: whenever a notification independently
+satisfied two or more `EvaluatedNoViolation` conditions at once (e.g. a not-yet-crossed
+`valid_until` **and** a scope-irrelevant downgrade on the same notification), the query emitted
+one Informational-severity row **per contributing signal** instead of one row for the
+notification. `Outcome` values were never wrong — only the row count. Confirmed via honest
+before/after re-execution (`evidence/native-execution/prefix-baseline/`, re-running the EXACT
+pre-fix query text from commit `d08bfd6` against the same live engine, not a transcript claim):
+
+| Fixture | Pre-fix rows | Post-fix rows | Outcome (both) |
+|---|---|---|---|
+| V11-07 | 2 | 1 | EvaluatedNoViolation |
+| V14-04 | 2 | 1 | EvaluatedNoViolation |
+| V14-05 | 2 | 1 | EvaluatedNoViolation |
+
+### The fix
+
+`EvaluatedNoViolation` ties now collapse to exactly **one row per notification**, retaining
+**every** contributing reason (semicolon-joined, e.g. `"expiry_not_yet_reached;
+scope_downgrade_irrelevant"`), grouped by an unambiguous notification identity — `instanceId` +
+`subscriptionId` + `principalHash` + `notifTime` + `notificationType`, never `notifTime` alone.
+`ConfirmedDrift` and `InsufficientEvidence` rows are explicitly, deliberately **untouched**:
+collapsing those would hide a real distinct boundary or reason, which this fix does not do (see
+fixture `V11-01`/`V11-03` below). Applied to all three implementations:
+
+- **`tests/attack/track3util.js` (JS reference oracle)**: already produced one row per
+  notification (a boolean `evaluatedNoViolation` flag, not a union of independent rows) — it did
+  not have the row-duplication defect. It DID discard *which* condition(s) applied, always
+  reporting `reason: null`. Upgraded to a `Set` of reason tags
+  (`expiry_not_yet_reached`/`expiry_suppressed_by_close`/`revocation_not_yet_effective`/
+  `revocation_suppressed_by_close`/`scope_downgrade_irrelevant`), joined the same way as KQL/SPL.
+- **`detections/kql/mcp_subscription_authorization_drift.kql`**: `ExpirySignals`/
+  `RevocationSignals` now blank `Boundary`/`BoundaryTime` for `EvaluatedNoViolation` rows (kept
+  only for `ConfirmedDrift`) and tag a reason. The final combination splits into
+  `NonInformationalResults` (unchanged `distinct`-based ConfirmedDrift/InsufficientEvidence
+  behavior) and `CollapsedNoViolation` (`summarize make_set(Reason)` + `strcat_array`, `any()`
+  for Boundary/BoundaryTime/change fields, deterministic since a genuine tie already blanks all
+  four), unioned back together.
+- **`detections/spl/mcp_subscription_authorization_drift.spl`**: aligned by direct structural
+  parallel — `mvappend()`/`eventstats values()` collect per-signal reason tags (relying on
+  Splunk's documented null-dropping behavior for `mvappend()`, not independently verified against
+  a live Splunk instance), joined via `mvjoin()`, with a conditional `dedup_key` that collapses
+  fully for `EvaluatedNoViolation` but preserves the existing per-`(Outcome, Boundary,
+  BoundaryTime, change)` distinctness for other tiers. The final `eventstats`/`dedup` `by`/key
+  clauses were also strengthened to the same 5-field unambiguous identity KQL already used
+  (previously `instance_id, notif_time` only).
+- **Reference models** (`tests/validation/language_equivalence.test.js`'s `kqlModelResults`/
+  `splModelResults`): **no change needed**. These models already track only the single winning
+  `[priority, outcome]` pair per notification (never row count), so they were already "aligned"
+  with the one-outcome-per-notification contract — they simply never modeled row count at all,
+  which is exactly why they could not have surfaced this defect. Recorded here rather than
+  silently left unexplained.
+
+### Proof that distinct notifications are never accidentally merged
+
+The collapse groups by the SAME 5-field identity throughout — a genuine risk item is a second,
+different notification sharing a timestamp being wrongly folded into the first. Natively
+re-verified after the fix: `V11-01` (one notification confirms once, a second confirms on BOTH
+of two applicable changes — 3 total `ConfirmedDrift` rows, exactly as before the fix — ties at
+that tier are untouched); `V11-03` (one notification, two independently-crossed boundaries — 2
+`ConfirmedDrift` rows, untouched); `V11-02`, `V12-01`, `V12-13`, `V13-01`, `V13-06` (each: two
+DISTINCT notifications for the same principal or instance, correctly producing two independent
+rows — one `EvaluatedNoViolation`, one `ConfirmedDrift` — never merged into one). Row-level JS
+assertions for the three affected fixtures are in
+`tests/validation/track3_row_regression.test.js`.
+
+### One remaining, explicitly deferred item
+
+**SPL's fix has not been independently executed against a live Splunk instance.** Per explicit
+instruction, Splunk was not started this pass (its Docker path defaults to a 60-day "Enterprise
+Trial" license requiring `SPLUNK_START_ARGS=--accept-license` and a separate
+`SPLUNK_GENERAL_TERMS` acceptance — see `README.md`, "Native execution"). The SPL query text was
+aligned to the verified KQL fix by direct structural parallel and careful manual trace-through
+(documented in the SPL file's own header and inline comments), but this is **not** the same
+confidence level as the KQL fix, which was proven against a real engine. This gap is named, not
+hidden.
+
 ## Remaining risks (unresolved, explicitly not decided in this block)
 
 1. **RESOLVED in "Track 3 remediation pass, part 2" above.** Track 3's principal-only join for
@@ -843,6 +971,18 @@ approximation, it is not treated as fixed:
    oracle correctly report `evaluated_no_violation` (fixture V14-07). This is an intentional,
    documented divergence asserted by name in `tests/validation/language_equivalence.test.js`, not
    a defect and not silently swept into a "fully equivalent" claim.
+6. **RESOLVED for KQL, natively verified, in "Track 3 remediation pass, part 5" above.**
+   `EvaluatedNoViolation` row-duplication on ties is fixed and confirmed via real Kusto engine
+   execution (25 representative fixtures, including honest before/after re-execution of the
+   exact pre-fix query text for the 3 affected fixtures). **The SPL side of this same fix is
+   NOT independently verified** — it was aligned by direct code parallel to the proven KQL fix,
+   not executed against a live Splunk instance (none was started this pass; see `README.md`,
+   "Native execution"). This is an open item, not a resolved one, for SPL specifically.
+7. **Native execution coverage is partial, not corpus-wide.** 25 of 106 corpus scenarios have
+   been run against a real KQL engine (`evidence/native-execution/`); the remaining scenarios,
+   the full SPL query, and any real Sentinel ingestion/scheduled-rule/alert pipeline have not
+   been. Do not read "native execution performed" anywhere in this document as extending beyond
+   what `evidence/native-execution/README.md` explicitly documents.
 
 ## Whether Block 1–5 assumptions changed
 

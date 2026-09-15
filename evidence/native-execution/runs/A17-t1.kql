@@ -1,0 +1,60 @@
+let MCPSecurityAudit = datatable(['timestamp']:string, ['event.name']:string, ['jsonrpc.request.id']:string, ['mcp.body.identity_hash']:string, ['mcp.body.method']:string, ['mcp.header.method']:string, ['mcp.header.name_hash']:string, ['mcp.protocol.version']:string, ['mcp.validation.method.result']:string, ['mcp.validation.name.result']:string, ['mcp.validation.reason']:string, ['mcp.validation.source']:string) [
+  "2026-09-05T17:00:01.013Z", "mcp.request.validation", "1701", "h_59978b0e408aef91ef27c8a8dce658b4", "tasks/get", "tasks/get", "h_c0ec146f7d54cc83bac4c071fafb416d", "2026-07-28", "match", "conflict", "Mcp-Name identifies Task-X but params.taskId identifies Task-Y -- same attacker's first, unsuccessful probing attempt.", "server_native",
+  "2026-09-05T17:00:06.020Z", "mcp.request.validation", "1702", "h_59978b0e408aef91ef27c8a8dce658b4", "tasks/get", "tasks/get", "h_59978b0e408aef91ef27c8a8dce658b4", "2026-07-28", "match", "match", "", "server_native"
+];
+
+// MCP Task Routing Header/Body Value Disagreement (Track 1)
+//
+// HYPOTHETICAL TABLE: MCPSecurityAudit. This table does NOT exist in Microsoft Sentinel by
+// default. A deployment must ingest the Block 2 telemetry contract events into a custom log
+// table named this (or update the table name below), with Block 2 field names preserved
+// verbatim as column names (including dots), accessed here via bracket-quoted identifiers.
+// See detections/field-mapping.md for the full field reference.
+//
+// Sigma equivalent: detections/sigma/mcp_task_routing_desynchronization.yml
+//
+// PRIMARY, HIGH-CONFIDENCE QUERY -- value disagreement only.
+// Deliberately does NOT fire on "missing" or "version_incompatible" results: a missing header
+// under a protocol version that never required it (SEP-2243 was introduced in 2026-07-28) is
+// legitimate compatibility traffic, not a routing violation. See the diagnostic query below for
+// that separate, lower-confidence case.
+MCPSecurityAudit
+| where ['event.name'] == "mcp.request.validation"
+| where ['mcp.validation.method.result'] == "conflict"
+    or ['mcp.validation.name.result'] == "conflict"
+| extend
+    Severity = "High",
+    DetectionTrack = "Track1_TaskRoutingDesynchronization",
+    ConflictOnMethod = (['mcp.validation.method.result'] == "conflict"),
+    ConflictOnIdentity = (['mcp.validation.name.result'] == "conflict")
+| project
+    ['timestamp'],
+    Severity,
+    DetectionTrack,
+    ['jsonrpc.request.id'],
+    ['mcp.protocol.version'],
+    ['mcp.header.method'],
+    ['mcp.body.method'],
+    ['mcp.header.name_hash'],
+    ['mcp.body.identity_hash'],
+    ConflictOnMethod,
+    ConflictOnIdentity,
+    ['mcp.validation.method.result'],
+    ['mcp.validation.name.result'],
+    ['mcp.validation.source'],
+    ['mcp.validation.reason']
+| order by ['timestamp'] asc
+
+// -----------------------------------------------------------------------------------------
+// OPTIONAL DIAGNOSTIC QUERY (lower confidence, separate from the primary rule above).
+// Fires on "missing" or "malformed" routing validation results. Never treated as equivalent
+// to the conflicting-value case above -- do not union this into the primary result set.
+// -----------------------------------------------------------------------------------------
+// MCPSecurityAudit
+// | where ['event.name'] == "mcp.request.validation"
+// | where ['mcp.validation.method.result'] in ("missing", "malformed")
+//     or ['mcp.validation.name.result'] in ("missing", "malformed")
+// | extend Severity = "Low", DetectionTrack = "Track1_RoutingHeaderDiagnostic"
+// | project ['timestamp'], Severity, DetectionTrack, ['jsonrpc.request.id'],
+//     ['mcp.protocol.version'], ['mcp.validation.method.result'], ['mcp.validation.name.result'],
+//     ['mcp.validation.source'], ['mcp.validation.reason']

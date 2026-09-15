@@ -1,3 +1,10 @@
+let MCPSecurityAudit = datatable(['timestamp']:string, ['event.name']:string, ['principal.id_hash']:string, ['mcp.subscription.id']:string, ['mcp.subscription.instance_id']:string, ['mcp.authz.binding_id']:string, ['mcp.subscription.required_scope']:dynamic, ['mcp.authz.valid_until']:string, ['mcp.authz.grant_expiry']:string, ['security.hash.key_id']:string, ['mcp.subscription.notification_type']:string, ['mcp.authz.change.type']:string, ['mcp.authz.change.source']:string, ['mcp.authz.change.effective_at']:string, ['mcp.authz.change.timing_confidence']:string, ['mcp.authz.change.affected_scope']:string, ['mcp.authz.change.affected_binding_ids']:dynamic, ['mcp.authz.change.removed_scope']:dynamic) [
+  "2026-10-04T11:20:00.000Z", "mcp.subscription.open", "h_bb8bbd8d672b4ab6123ebf2feceec007", "20108", "", "binding:v14-08", dynamic(["files:read","files:write"]), "2026-10-04T12:00:00.000Z", "2026-10-04T12:00:00.000Z", "block3-test-key-v1", "", "", "", "", "", "", dynamic(null), dynamic(null),
+  "2026-10-04T11:20:00.050Z", "mcp.subscription.acknowledged", "h_bb8bbd8d672b4ab6123ebf2feceec007", "20108", "", "", dynamic(null), "", "", "block3-test-key-v1", "", "", "", "", "", "", dynamic(null), dynamic(null),
+  "2026-10-04T11:25:00.000Z", "mcp.subscription.authorization_change", "h_bb8bbd8d672b4ab6123ebf2feceec007", "", "", "", dynamic(null), "", "", "block3-test-key-v1", "", "scope_downgraded", "authorization_server_event", "2026-10-04T11:25:00.000Z", "authoritative", "binding", dynamic(["binding:v14-08"]), dynamic(["files:read","files:write","network:access"]),
+  "2026-10-04T11:30:00.000Z", "mcp.subscription.notification", "h_bb8bbd8d672b4ab6123ebf2feceec007", "20108", "", "", dynamic(null), "", "", "block3-test-key-v1", "notifications/resources/updated", "", "", "", "", "", dynamic(null), dynamic(null)
+];
+
 // MCP Long-Lived Subscription Authorization Drift (Track 3) -- SCOPE-AWARE CORRECTION
 // (example-driven regression pass -- see docs/validation-report.md "Track 3 remediation pass,
 // part 3" for the ten independently-specified examples this query is checked against)

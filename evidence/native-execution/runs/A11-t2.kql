@@ -1,0 +1,41 @@
+let MCPSecurityAudit = datatable(['timestamp']:string, ['event.name']:string, ['mcp.authz.decision']:string, ['mcp.authz.policy_version']:string, ['mcp.authz.reason']:string, ['mcp.task.authz_context_id_hash']:string, ['mcp.task.id_hash']:string, ['mcp.task.operation']:string, ['principal.authenticated']:bool, ['principal.id_hash']:string) [
+  "2026-09-01T10:00:01.006Z", "mcp.task.authorization", "allow", "", "authorized_owner", "h_47a941f16cec5204ae612bf85aa22dbd", "h_db271acd2606f916b317bf74fed62b56", "get", true, "h_47a941f16cec5204ae612bf85aa22dbd",
+  "2026-09-01T10:00:02.017Z", "mcp.task.authorization", "allow", "", "authorized_grant", "h_47a941f16cec5204ae612bf85aa22dbd", "h_db271acd2606f916b317bf74fed62b56", "get", true, "h_15826c00e264ca3afec1e6c5a7ddc72f"
+];
+
+// MCP Cross-Principal Task Authorization Violation (Track 2)
+//
+// HYPOTHETICAL TABLE: MCPSecurityAudit. Does not exist in Sentinel by default -- see
+// detections/field-mapping.md.
+//
+// Sigma equivalent: detections/sigma/mcp_cross_principal_task_authorization.yml
+//
+// Relies entirely on server-side authorization evidence (mcp.authz.decision/reason). Never
+// filters or infers from rpc.status_code / http.response.status_code, since a denied request
+// against an existing-but-unauthorized task and a request against a genuinely nonexistent task
+// both typically surface the same -32602 response (SEP-2663's anti-enumeration design,
+// docs/threat-model.md SS10) -- that ambiguity is exactly why this must be a server-side-
+// evidence filter, not a response-code filter. A null mcp.task.authz_context_id_hash is
+// deliberately NOT part of the filter in either direction -- it is included only as
+// investigation context.
+MCPSecurityAudit
+| where ['event.name'] == "mcp.task.authorization"
+| where ['mcp.authz.decision'] == "deny"
+| where ['mcp.authz.reason'] == "principal_mismatch"
+// Excludes, by construction (not by an explicit "!=" filter you could forget to update):
+//   mcp.authz.reason in ("policy_denied", "insufficient_scope", "context_unbound", "unknown")
+// -- ordinary denials that are not cross-principal task misuse.
+| extend Severity = "High", DetectionTrack = "Track2_CrossPrincipalTaskAuthorization"
+| project
+    ['timestamp'],
+    Severity,
+    DetectionTrack,
+    ['principal.id_hash'],
+    ['principal.authenticated'],
+    ['mcp.task.id_hash'],
+    ['mcp.task.authz_context_id_hash'],
+    ['mcp.task.operation'],
+    ['mcp.authz.decision'],
+    ['mcp.authz.reason'],
+    ['mcp.authz.policy_version']
+| order by ['timestamp'] asc

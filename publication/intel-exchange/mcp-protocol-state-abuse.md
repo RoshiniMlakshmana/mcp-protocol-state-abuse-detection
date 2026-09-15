@@ -22,9 +22,9 @@ mechanism (`subscriptions/listen`, introduced in MCP specification revision `202
 
 The work includes a threat model, a custom audit-telemetry contract (since MCP defines no
 security-audit schema of its own), 106 deterministic test scenarios (551 events) across normal,
-controlled-attack, and adversarial-stress corpora, 139 automated tests, and documented
+controlled-attack, and adversarial-stress corpora, 140 automated tests, and documented
 false-positive/evasion analysis. All controlled-corpus metrics are explicitly not claimed as
-real-world performance figures. (Four subsequent Track 3 remediation passes: (1) fixed two SPL
+real-world performance figures. (Five subsequent Track 3 remediation passes: (1) fixed two SPL
 join defects, replaced a vacuous language-equivalence test, and added 11 regression fixtures;
 (2) a scope-aware correction resolving revocation scope to a specific authorization binding
 rather than a principal — verified against current MCP/OAuth documentation — adding six new
@@ -36,8 +36,12 @@ replaced an "ever observed" approximation with a precise effective-time interval
 6 further fixtures; (4) a pass fixing the SPL scope-downgrade relevance check's
 first-scope-tag-only approximation with an exact multivalue intersection, adding 8 further
 fixtures and naming one unresolved SPL/Splunk platform limitation rather than approximating past
-it. See `docs/validation-report.md` for the full account; re-run the test suite rather than
-assuming these exact counts stay fixed.)
+it; (5) a native-execution pass — the first in this project to run the real KQL query against a
+real Kusto engine (25 representative fixtures, all passing) rather than a JS model of it — which
+found and fixed a row-duplication defect on `evaluated_no_violation` ties, verified natively for
+KQL and aligned by code parallel for SPL. See `docs/validation-report.md` for the full account
+and `evidence/native-execution/` for the native-execution evidence itself; re-run the test suite
+rather than assuming these exact counts stay fixed.)
 
 ## 2. Why MCP state matters
 
@@ -164,7 +168,7 @@ third-party infrastructure is targeted anywhere in this project.
 
 ## 10. Detection results
 
-139/139 automated tests pass (`node --test tests/normal/*.test.js tests/attack/*.test.js
+140/140 automated tests pass (`node --test tests/normal/*.test.js tests/attack/*.test.js
 tests/detections/*.test.js tests/validation/*.test.js`), fully deterministic. Controlled-corpus
 metrics under each rule's declared prerequisites (`docs/validation-report.md`, "View 1"):
 
@@ -188,7 +192,7 @@ Full detail: `docs/false-positive-analysis.md`, `docs/validation-report.md`. Two
 Track 3 logic treated *any* authoritative authorization-change event as invalidating, without
 checking its type — so a legitimate renewal (`scope_upgraded`) was misclassified as a
 revocation. Root-caused and fixed identically across Sigma, KQL, SPL, and the test suite;
-regression-verified against the full suite (now 139 tests).
+regression-verified against the full suite (now 140 tests).
 
 **A first Track 3 remediation pass** found and fixed two further genuine code defects specific
 to SPL (a join-key inconsistency with KQL, and reliance on Splunk's `join` `max=1` default that
@@ -269,13 +273,17 @@ Full detail, classified detectable/partially detectable/not detectable:
 
 Track 1 and Track 2 are fully equivalent across Sigma, KQL, and SPL (mechanically verified,
 `tests/validation/language_equivalence.test.js`, zero disagreements across 106 scenarios). For
-Track 3, "KQL and SPL are equivalent" means two independently-coded JS models of each language's
-own written semantics agree row-for-row on the shared corpus (replacing an earlier, vacuous
-self-comparison test) except one named, intentional exception (fixture V14-07, a genuine
-SPL/Splunk platform limitation around explicitly-empty scope evidence — see
+Track 3, "KQL and SPL are equivalent" ACROSS THE FULL CORPUS means two independently-coded JS
+models of each language's own written semantics agree row-for-row on the shared corpus (replacing
+an earlier, vacuous self-comparison test) except one named, intentional exception (fixture
+V14-07, a genuine SPL/Splunk platform limitation around explicitly-empty scope evidence — see
 `docs/validation-report.md`, "Track 3 remediation pass, part 4") — not that either was executed
-as native KQL or SPL against a real backend, which remains pending (see `README.md`, "Validation
-status and disclosures").
+as native KQL or SPL against a real backend at full-corpus scale. **A separate, smaller pass has
+since natively executed the real KQL query** against a real Kusto engine for 25 representative
+fixtures, all passing (see `docs/validation-report.md`, "Track 3 remediation pass, part 5", and
+`evidence/native-execution/`) — SPL and the remaining corpus remain not natively executed; a real
+Sentinel/Splunk deployment remains not performed either way (see `README.md`, "Validation status
+and disclosures").
 
 **Track 3 is not equivalent across languages, and this is not hidden.** The current official
 Sigma correlation specification can order and time-window matched events and group them by

@@ -323,6 +323,20 @@ explicitly low-confidence/informational query, never merged into the primary res
   (unlike KQL's `dynamic` type), so fixture V14-07 is asserted as one intentional, named
   KQL/SPL disagreement rather than folded into a "fully equivalent" claim. See
   `docs/validation-report.md`, "Track 3 remediation pass, part 4."
+- **[Code defect, FIXED in a fifth remediation pass, natively verified for KQL] A notification
+  independently satisfying two or more `EvaluatedNoViolation` conditions at once produced one
+  row PER condition instead of one row for the notification.** Found via native execution
+  against a real Kusto engine (Microsoft's local, free, perpetual Kusto emulator — no
+  account/trial) — fixtures V11-07, V14-04, V14-05 each went from 2 rows to 1, re-confirmed by
+  re-executing the exact pre-fix query text from commit `d08bfd6` against the same live engine.
+  `Outcome` values were never wrong, only the row count. Fixed by collapsing such ties to one row
+  per notification, retaining every contributing reason (e.g.
+  `"expiry_not_yet_reached; scope_downgrade_irrelevant"`), grouped by an unambiguous notification
+  identity — never a timestamp alone. `ConfirmedDrift`/`InsufficientEvidence` ties are explicitly
+  untouched. KQL is native-execution-verified; SPL is aligned by direct code parallel only, not
+  independently executed (no Splunk instance was started this pass). Full reproducible evidence:
+  `evidence/native-execution/`. See `docs/validation-report.md`, "Track 3 remediation pass, part
+  5."
 - **[Code defects, FIXED]** A Track 3 remediation pass found and fixed: (a) SPL's expiry-leg and
   close-suppression joins previously keyed on `subscription_id` alone, inconsistent with KQL,
   which could let one principal's close/expiry data affect a different principal's notification
@@ -333,9 +347,12 @@ explicitly low-confidence/informational query, never merged into the primary res
 - **The Sigma correlation cannot faithfully implement this detection** — see
   `detections/sigma/mcp_subscription_drift_correlation.yml`'s description and "Sigma
   limitations" below. KQL and SPL are the authoritative implementations for Track 3. "Equivalent"
-  between KQL and SPL means two independently-coded JS models of each language's own written
-  semantics agree row-for-row on the shared test corpus — not native execution against a real
-  backend (still pending; see README.md).
+  between KQL and SPL, at FULL-corpus scale, means two independently-coded JS models of each
+  language's own written semantics agree row-for-row on the shared test corpus — not native
+  execution against a real backend at that scale (still not performed for the full corpus, for
+  SPL at all, or for a Sentinel/Splunk deployment). A separate, smaller pass has since natively
+  executed the real KQL query for 25 representative fixtures against a real Kusto engine — see
+  README.md, "Native execution status", and `evidence/native-execution/`.
 - Depends on an authorization-server/policy-engine push feed for the `effective_at` path,
   which most real OAuth deployments do not have (`telemetry/schema.md` §5) — this is why the
   `valid_until`/silent-expiry path exists as a fully independent detection leg, not a fallback

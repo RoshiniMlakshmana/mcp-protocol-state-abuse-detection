@@ -143,7 +143,15 @@ function computeTrack3Resolution(events) {
 
     let confirmedAny = false;
     let insufficientReason = null;
-    let evaluatedNoViolation = false;
+    // A notification can independently satisfy MULTIPLE "no violation" conditions at once
+    // (e.g. valid_until not yet crossed AND a scope-irrelevant downgrade) -- collected as a set
+    // of short reason tags, all retained, rather than a single boolean that discards which
+    // condition(s) actually applied. This is ONE row per notification (unchanged from before),
+    // not a source of row duplication -- see KQL/SPL's ExpirySignals+RevocationSignals union,
+    // which independently produced ONE ROW PER CONTRIBUTING SIGNAL for the same tie and is fixed
+    // to match this oracle's one-row shape (docs/validation-report.md, "Track 3 remediation
+    // pass, part 5").
+    const noViolationReasons = new Set();
 
     if (epochMismatch) {
       insufficientReason = 'incompatible_hash_epoch';
@@ -152,7 +160,7 @@ function computeTrack3Resolution(events) {
       // that's already tied to this exact instance/binding), never ambiguous.
       if (effectiveValidUntil) {
         if (n.notifTime > effectiveValidUntil) {
-          if (suppressed) evaluatedNoViolation = true;
+          if (suppressed) noViolationReasons.add('expiry_suppressed_by_close');
           else {
             results.push({
               instanceId: n.instanceId, subscriptionId: n.subId, principalHash: n.principalHash,
@@ -161,7 +169,7 @@ function computeTrack3Resolution(events) {
             });
             confirmedAny = true;
           }
-        } else evaluatedNoViolation = true;
+        } else noViolationReasons.add('expiry_not_yet_reached');
       }
 
       // Leg B: authoritative revocation / scope downgrade -- binding-scoped. Timing is checked
@@ -182,13 +190,13 @@ function computeTrack3Resolution(events) {
           insufficientReason = insufficientReason || 'incomplete_timing_evidence';
           continue;
         }
-        if (!(n.notifTime > c.effectiveAt)) { evaluatedNoViolation = true; continue; }
+        if (!(n.notifTime > c.effectiveAt)) { noViolationReasons.add('revocation_not_yet_effective'); continue; }
 
         // A legitimately closed stream needs no scope resolution at all -- suppression is
         // checked BEFORE scope ambiguity, since "the subscriber already stopped receiving
         // notifications through the proper channel" is a definitive answer regardless of which
         // binding the revocation targeted.
-        if (suppressed) { evaluatedNoViolation = true; continue; }
+        if (suppressed) { noViolationReasons.add('revocation_suppressed_by_close'); continue; }
 
         if (effectiveBindingId !== undefined && conflictedBindingIds.has(effectiveBindingId)) {
           insufficientReason = insufficientReason || 'conflicting_evidence';
@@ -201,7 +209,7 @@ function computeTrack3Resolution(events) {
 
         if (c.type === 'scope_downgraded') {
           if (!requiredScope || !c.removedScope) { insufficientReason = insufficientReason || 'missing_scope_evidence'; continue; }
-          if (!c.removedScope.some((s) => requiredScope.includes(s))) { evaluatedNoViolation = true; continue; }
+          if (!c.removedScope.some((s) => requiredScope.includes(s))) { noViolationReasons.add('scope_downgrade_irrelevant'); continue; }
         }
 
         results.push({
@@ -215,8 +223,11 @@ function computeTrack3Resolution(events) {
     }
 
     if (!confirmedAny) {
+      const evaluatedNoViolation = noViolationReasons.size > 0;
       const outcome = insufficientReason ? 'insufficient_evidence' : (evaluatedNoViolation ? 'evaluated_no_violation' : 'insufficient_evidence');
-      const reason = insufficientReason || (evaluatedNoViolation ? null : 'no_invalidity_evidence');
+      // For evaluated_no_violation, ALL contributing reasons are retained (semicolon-joined, sorted
+      // for determinism), not just the first/only one -- matches the KQL/SPL output contract below.
+      const reason = insufficientReason || (evaluatedNoViolation ? [...noViolationReasons].sort().join('; ') : 'no_invalidity_evidence');
       results.push({
         instanceId: n.instanceId, subscriptionId: n.subId, principalHash: n.principalHash,
         notifTime: n.notifTime, notificationType: n.notificationType, outcome, reason,

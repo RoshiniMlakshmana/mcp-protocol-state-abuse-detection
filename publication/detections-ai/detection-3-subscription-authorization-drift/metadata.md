@@ -442,10 +442,12 @@ current official Sigma correlation specification can order and time-window match
 group them by equal field values, but has **no mechanism to compare one event's field value
 (`effective_at`) against another event's own timestamp, and no mechanism to assert the absence
 of a third event type** (a valid close). As a direct, mechanically-verified consequence
-(`tests/validation/language_equivalence.test.js`) — **"equivalence" here and above means two
-independently-coded JS models of each language's own written semantics agree row-for-row on a
-shared test corpus, not that any of KQL, SPL, or Sigma was executed natively against a real
-backend (that remains pending — see `README.md`)**:
+(`tests/validation/language_equivalence.test.js`) — **"equivalence" here and above, at FULL-corpus
+scale, means two independently-coded JS models of each language's own written semantics agree
+row-for-row on a shared test corpus, not that any of KQL, SPL, or Sigma was executed natively
+against a real backend at that scale (that remains pending; a separate, smaller pass has since
+natively executed KQL specifically for 25 representative fixtures — see `README.md`, "Native
+execution status")**:
 
 | Scenario | KQL/SPL (authoritative) | Sigma correlation | Agree? |
 |---|---|---|---|

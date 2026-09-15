@@ -105,6 +105,14 @@ test('V11-07: close exactly at notification time suppresses it (inclusive close 
   assert.deepEqual(highRows(byId('V11-07').events), []);
 });
 
+test('V11-07 (Track 3 remediation pass, part 5): the suppressed close AND a not-yet-reached valid_until both independently conclude no-violation for the SAME notification -- exactly ONE row, retaining BOTH reasons', () => {
+  const { track3Resolution } = require('../detections/oracle');
+  const { results } = track3Resolution(byId('V11-07').events);
+  assert.equal(results.length, 1, 'two independently-true no-violation conditions must not produce two rows');
+  assert.equal(results[0].outcome, 'evaluated_no_violation');
+  assert.equal(results[0].reason, 'expiry_not_yet_reached; revocation_suppressed_by_close');
+});
+
 test('V11-08: notification exactly at valid_until does not fire (exclusive invalidation boundary, expiry leg)', () => {
   assert.deepEqual(highRows(byId('V11-08').events), []);
 });
@@ -232,18 +240,20 @@ test('V14-03 (exact intersection #3): a duplicate tag in required_scope confirms
   assert.equal(results[0].outcome, 'confirmed_drift');
 });
 
-test('V14-04 (exact intersection #4): genuinely disjoint scope lists produce evaluated_no_violation', () => {
+test('V14-04 (exact intersection #4): genuinely disjoint scope lists produce evaluated_no_violation, one row retaining both contributing reasons', () => {
   const { track3Resolution } = require('../detections/oracle');
   const { results } = track3Resolution(byId('V14-04').events);
-  assert.equal(results.length, 1);
+  assert.equal(results.length, 1, 'the not-yet-reached expiry AND the irrelevant downgrade must not produce two rows (Track 3 remediation pass, part 5)');
   assert.equal(results[0].outcome, 'evaluated_no_violation');
+  assert.equal(results[0].reason, 'expiry_not_yet_reached; scope_downgrade_irrelevant');
 });
 
 test('V14-05 (exact intersection #5): "files:read" and "files:read_all" are different, complete scope strings -- a prefix/substring is never a match', () => {
   const { track3Resolution } = require('../detections/oracle');
   const { results } = track3Resolution(byId('V14-05').events);
-  assert.equal(results.length, 1);
+  assert.equal(results.length, 1, 'the not-yet-reached expiry AND the non-matching downgrade must not produce two rows (Track 3 remediation pass, part 5)');
   assert.equal(results[0].outcome, 'evaluated_no_violation', 'must not treat "files:read" as matching inside "files:read_all"');
+  assert.equal(results[0].reason, 'expiry_not_yet_reached; scope_downgrade_irrelevant');
 });
 
 test('V14-06 (missing scope evidence, contrast with V14-07): an entirely absent required_scope reports insufficient_evidence', () => {

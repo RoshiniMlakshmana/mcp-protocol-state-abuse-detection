@@ -43,20 +43,6 @@
 // (principal-scoped, NOT bare subscription_id -- two different principals legitimately reusing
 // the identical wire id must not collide onto one instance); an .authorization_change lacking
 // mcp.authz.change.affected_scope is treated as "unknown" (NEVER resolved via candidate count).
-//
-// TRACK 3 REMEDIATION PASS, PART 5 (this revision): native execution against a real Kusto
-// engine (Microsoft's local "kustainer" emulator -- see docs/validation-report.md "Track 3
-// remediation pass, part 5" and evidence/native-execution/) exposed a row-duplication defect
-// this file's structure could not have surfaced from JS-model comparison alone: whenever a
-// notification independently satisfied TWO OR MORE EvaluatedNoViolation-tier signals at once
-// (e.g. a not-yet-crossed valid_until AND a scope-irrelevant downgrade on the SAME notification
-// -- fixtures V11-07, V14-04, V14-05), the prior AllSignals-union design emitted one
-// Informational-severity row PER contributing signal instead of one row for the notification.
-// Outcome values were never wrong -- only the row count. Fixed by collapsing EvaluatedNoViolation
-// ties to exactly one row per notification while retaining every contributing reason (see
-// CollapsedNoViolation below); ConfirmedDrift and InsufficientEvidence ties are explicitly left
-// unchanged -- collapsing those would hide a real distinct boundary or reason, which this fix
-// does not touch.
 
 let InvalidatingTypes = dynamic(["revoked", "expired", "scope_downgraded"]);
 
@@ -136,13 +122,8 @@ let ExpirySignals = NotificationsResolved
 | extend crossed = notifTime > effectiveValidUntil,
          suppressed = isnotnull(earliestCloseTime) and earliestCloseTime <= notifTime
 | extend Outcome = iif(crossed and not(suppressed), "ConfirmedDrift", "EvaluatedNoViolation"),
-         Priority = iif(crossed and not(suppressed), 3, 1)
-// Boundary/BoundaryTime are only meaningful for a CONFIRMED finding; blanked for
-// EvaluatedNoViolation so this leg's tie-collapse (below) never has to arbitrarily pick one
-// boundary among several independently-clean signals -- see the Reason tag instead.
-| extend Boundary = iif(Outcome == "ConfirmedDrift", "valid_until", ""),
-         BoundaryTime = iif(Outcome == "ConfirmedDrift", effectiveValidUntil, datetime(null)),
-         Reason = case(Outcome == "ConfirmedDrift", "", crossed and suppressed, "expiry_suppressed_by_close", "expiry_not_yet_reached")
+         Priority = iif(crossed and not(suppressed), 3, 1),
+         Boundary = "valid_until", BoundaryTime = effectiveValidUntil, Reason = ""
 | distinct instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId, Outcome, Priority, Boundary, BoundaryTime, changeType1=tostring(""), changeSource1=tostring(""), Reason;
 
 // --- Signal 2: epoch mismatch. ---
@@ -205,7 +186,7 @@ let ClearedByClose = NotificationsResolved
 | where crossed and suppressed
 | project instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
     Outcome = "EvaluatedNoViolation", Priority = 1, Boundary = "", BoundaryTime = datetime(null),
-    changeType1 = "", changeSource1 = "", Reason = "revocation_suppressed_by_close";
+    changeType1 = "", changeSource1 = "", Reason = "";
 
 let RevocationSignals = RevocationCandidates
 | where Applies == "yes"
@@ -219,12 +200,9 @@ let RevocationSignals = RevocationCandidates
     ScopeOk == "irrelevant", "EvaluatedNoViolation",
     "ConfirmedDrift")
 | extend Priority = case(Outcome == "ConfirmedDrift", 3, Outcome == "InsufficientEvidence", 2, 1)
-| extend Reason = case(ScopeOk == "missing", "missing_scope_evidence", ScopeOk == "irrelevant", "scope_downgrade_irrelevant", "")
-// Boundary/BoundaryTime only carried for a CONFIRMED finding -- see ExpirySignals above for why.
-| extend Boundary = iif(Outcome == "ConfirmedDrift", "effective_at", ""),
-         BoundaryTime = iif(Outcome == "ConfirmedDrift", effectiveAt, datetime(null))
+| extend Reason = iif(ScopeOk == "missing", "missing_scope_evidence", "")
 | project instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
-    Outcome, Priority, Boundary, BoundaryTime,
+    Outcome, Priority, Boundary = "effective_at", BoundaryTime = effectiveAt,
     changeType1 = tostring(changeType), changeSource1 = tostring(changeSource), Reason;
 
 let ConflictSignals = RevocationCandidates
@@ -248,43 +226,18 @@ let BaselineSignals = NotificationsResolved
 
 let AllSignals = union ExpirySignals, EpochSignals, MalformedTimingSignals, RevocationSignals, ConflictSignals, AmbiguousSignals, ClearedByClose, BaselineSignals;
 
-// One row per (instance, notification) AT THE WINNING PRIORITY: the highest-priority signal
-// wins (ConfirmedDrift=3 > InsufficientEvidence=2 > EvaluatedNoViolation=1 > the Priority=0
-// baseline). Grouped by instanceId/subscriptionId/principalHash/notifTime/notificationType --
-// an unambiguous notification identity, never notifTime alone.
-let WithMaxPriority = AllSignals
+// One row per (instance, notification): the highest-priority signal wins (ConfirmedDrift=3 >
+// InsufficientEvidence=2 > EvaluatedNoViolation=1 > the Priority=0 baseline). Re-joining back to
+// AllSignals and filtering Priority == MaxPriority (rather than picking an arbitrary single row)
+// means a notification confirmed on TWO independent boundaries at once (e.g. revocation AND
+// expiry both crossed, both Priority=3) correctly keeps BOTH ConfirmedDrift rows, matching the
+// JS oracle's union semantics.
+AllSignals
 | summarize MaxPriority = max(Priority) by instanceId, subscriptionId, principalHash, notifTime, notificationType
 | join kind=inner (AllSignals) on instanceId, subscriptionId, principalHash, notifTime, notificationType
-| where Priority == MaxPriority;
-
-// ConfirmedDrift and InsufficientEvidence ties are UNCHANGED: a notification confirmed on TWO
-// independent boundaries at once (e.g. revocation AND expiry both crossed) still correctly
-// keeps BOTH ConfirmedDrift rows, matching the JS oracle's per-leg union semantics. Never
-// collapsed -- only EvaluatedNoViolation ties are (below).
-let NonInformationalResults = WithMaxPriority
-| where Outcome != "EvaluatedNoViolation"
+| where Priority == MaxPriority
 | distinct instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
-    Outcome, Boundary, BoundaryTime, changeType1, changeSource1, Reason;
-
-// EvaluatedNoViolation ties collapse to exactly ONE row per notification, retaining every
-// contributing reason (fixed here: a prior revision emitted one row PER independently-clean
-// signal -- e.g. "valid_until not yet crossed" AND "scope-irrelevant downgrade" for the SAME
-// notification produced two identical-outcome, Informational-severity rows, confirmed via
-// native execution against V11-07/V14-04/V14-05 -- see docs/validation-report.md "Track 3
-// remediation pass, part 5"). `any()` on Boundary/BoundaryTime/changeType1/changeSource1 is
-// deterministic here because the true tie case blanks all four (see ExpirySignals/
-// RevocationSignals above), so every row in a genuine tie already agrees on them; a single,
-// non-tied EvaluatedNoViolation row's own values pass through unchanged.
-let CollapsedNoViolation = WithMaxPriority
-| where Outcome == "EvaluatedNoViolation"
-| summarize Reasons = make_set(Reason), Boundary = any(Boundary), BoundaryTime = any(BoundaryTime),
-    changeType1 = any(changeType1), changeSource1 = any(changeSource1)
-    by instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId
-| extend Outcome = "EvaluatedNoViolation", Reason = strcat_array(array_sort_asc(Reasons), "; ")
-| project instanceId, subscriptionId, principalHash, notifTime, notificationType, effectiveBindingId,
-    Outcome, Boundary, BoundaryTime, changeType1, changeSource1, Reason;
-
-union NonInformationalResults, CollapsedNoViolation
+    Outcome, Boundary, BoundaryTime, changeType1, changeSource1, Reason
 | extend Severity = case(Outcome == "ConfirmedDrift", "High", Outcome == "InsufficientEvidence", "Medium", "Informational"),
          DetectionTrack = "Track3_SubscriptionAuthorizationDrift"
 | project
