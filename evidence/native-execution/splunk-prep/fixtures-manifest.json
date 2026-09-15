@@ -1,0 +1,202 @@
+[
+  {
+    "id": "V14-01",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v14_scope_match_non_first_position.jsonl",
+    "source_scope": "v14_scope_match_non_first_position.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V14-01.spl"
+  },
+  {
+    "id": "V14-02",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v14_scope_reordered_same_result.jsonl",
+    "source_scope": "v14_scope_reordered_same_result.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V14-02.spl"
+  },
+  {
+    "id": "V14-03",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v14_scope_duplicate_tags.jsonl",
+    "source_scope": "v14_scope_duplicate_tags.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V14-03.spl"
+  },
+  {
+    "id": "V14-04",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v14_scope_no_overlap.jsonl",
+    "source_scope": "v14_scope_no_overlap.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V14-04.spl"
+  },
+  {
+    "id": "V14-05",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v14_scope_exact_string_not_substring.jsonl",
+    "source_scope": "v14_scope_exact_string_not_substring.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V14-05.spl"
+  },
+  {
+    "id": "V14-06",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v14_scope_missing_entirely.jsonl",
+    "source_scope": "v14_scope_missing_entirely.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V14-06.spl"
+  },
+  {
+    "id": "V14-07",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v14_scope_explicitly_empty.jsonl",
+    "source_scope": "v14_scope_explicitly_empty.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V14-07.spl"
+  },
+  {
+    "id": "V14-08",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v14_scope_multiple_matches_single_alert.jsonl",
+    "source_scope": "v14_scope_multiple_matches_single_alert.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V14-08.spl"
+  },
+  {
+    "id": "V11-01",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v11_multiple_changes_out_of_order.jsonl",
+    "source_scope": "v11_multiple_changes_out_of_order.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V11-01.spl"
+  },
+  {
+    "id": "V11-02",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v11_same_subid_different_principals.jsonl",
+    "source_scope": "v11_same_subid_different_principals.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V11-02.spl"
+  },
+  {
+    "id": "V11-03",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v11_revocation_and_expiry_both_apply.jsonl",
+    "source_scope": "v11_revocation_and_expiry_both_apply.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V11-03.spl"
+  },
+  {
+    "id": "V11-07",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v11_close_exactly_at_notification.jsonl",
+    "source_scope": "v11_close_exactly_at_notification.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V11-07.spl"
+  },
+  {
+    "id": "V12-01",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v12_same_principal_only_a_alerts.jsonl",
+    "source_scope": "v12_same_principal_only_a_alerts.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V12-01.spl"
+  },
+  {
+    "id": "V12-13",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v12_corrected_cross_subscription_counterpart.jsonl",
+    "source_scope": "v12_corrected_cross_subscription_counterpart.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V12-13.spl"
+  },
+  {
+    "id": "V13-01",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v13_confirmed_during_invalid_interval.jsonl",
+    "source_scope": "v13_confirmed_during_invalid_interval.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V13-01.spl"
+  },
+  {
+    "id": "V13-03",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v13_unknown_scope_single_candidate.jsonl",
+    "source_scope": "v13_unknown_scope_single_candidate.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V13-03.spl"
+  },
+  {
+    "id": "V13-05",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v13_incomplete_timing_evidence.jsonl",
+    "source_scope": "v13_incomplete_timing_evidence.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V13-05.spl"
+  },
+  {
+    "id": "V13-06",
+    "track": "track3",
+    "fixture_file": "data/validation/track3/v13_all_principal_bindings_precise_interval.jsonl",
+    "source_scope": "v13_all_principal_bindings_precise_interval.jsonl",
+    "base_search_occurrences_scoped": 4,
+    "query_file": "evidence/native-execution/splunk-prep/queries/V13-06.spl"
+  },
+  {
+    "id": "A1-t1",
+    "track": "track1",
+    "fixture_file": "data/attack/track1/task_get_identity_mismatch.jsonl",
+    "source_scope": "task_get_identity_mismatch.jsonl",
+    "base_search_occurrences_scoped": 1,
+    "query_file": "evidence/native-execution/splunk-prep/queries/A1-t1.spl"
+  },
+  {
+    "id": "A6-t1",
+    "track": "track1",
+    "fixture_file": "data/attack/controls/missing_header_compatibility.jsonl",
+    "source_scope": "missing_header_compatibility.jsonl",
+    "base_search_occurrences_scoped": 1,
+    "query_file": "evidence/native-execution/splunk-prep/queries/A6-t1.spl"
+  },
+  {
+    "id": "A11-t1",
+    "track": "track1",
+    "fixture_file": "data/normal/authorized_shared_access.jsonl",
+    "source_scope": "authorized_shared_access.jsonl",
+    "base_search_occurrences_scoped": 1,
+    "query_file": "evidence/native-execution/splunk-prep/queries/A11-t1.spl"
+  },
+  {
+    "id": "A17-t1",
+    "track": "track1",
+    "fixture_file": "data/attack/combined/mismatch_and_unauthorized.jsonl",
+    "source_scope": "mismatch_and_unauthorized.jsonl",
+    "base_search_occurrences_scoped": 1,
+    "query_file": "evidence/native-execution/splunk-prep/queries/A17-t1.spl"
+  },
+  {
+    "id": "A7-t2",
+    "track": "track2",
+    "fixture_file": "data/attack/track2/unauthorized_get.jsonl",
+    "source_scope": "unauthorized_get.jsonl",
+    "base_search_occurrences_scoped": 1,
+    "query_file": "evidence/native-execution/splunk-prep/queries/A7-t2.spl"
+  },
+  {
+    "id": "A11-t2",
+    "track": "track2",
+    "fixture_file": "data/normal/authorized_shared_access.jsonl",
+    "source_scope": "authorized_shared_access.jsonl",
+    "base_search_occurrences_scoped": 1,
+    "query_file": "evidence/native-execution/splunk-prep/queries/A11-t2.spl"
+  },
+  {
+    "id": "A17-t2",
+    "track": "track2",
+    "fixture_file": "data/attack/combined/mismatch_and_unauthorized.jsonl",
+    "source_scope": "mismatch_and_unauthorized.jsonl",
+    "base_search_occurrences_scoped": 1,
+    "query_file": "evidence/native-execution/splunk-prep/queries/A17-t2.spl"
+  }
+]

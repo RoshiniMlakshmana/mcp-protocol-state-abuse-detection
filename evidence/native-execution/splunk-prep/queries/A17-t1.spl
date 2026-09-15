@@ -1,0 +1,45 @@
+```
+MCP Task Routing Header/Body Value Disagreement (Track 1)
+
+Placeholder source: index=mcp_security_audit sourcetype=mcp:audit:json -- this index/sourcetype
+is NOT shipped by Splunk by default; a deployment must create it and ingest the Block 2
+telemetry contract events into it. See detections/field-mapping.md.
+
+Sigma equivalent: detections/sigma/mcp_task_routing_desynchronization.yml
+
+PRIMARY, high-confidence search: value disagreement only. Deliberately does not fire on
+"missing" or "version_incompatible" results -- a missing header under a protocol version that
+never required it (pre-2026-07-28, pre-SEP-2243) is compatibility traffic, not a routing
+violation. See the separate, lower-confidence diagnostic search below.
+```
+
+index=mcp_security_audit sourcetype=mcp:audit:json source="mismatch_and_unauthorized.jsonl" "event.name"="mcp.request.validation"
+    ("mcp.validation.method.result"="conflict" OR "mcp.validation.name.result"="conflict")
+| eval Severity="High"
+| eval DetectionTrack="Track1_TaskRoutingDesynchronization"
+| eval ConflictOnMethod=if('mcp.validation.method.result'="conflict", "true", "false")
+| eval ConflictOnIdentity=if('mcp.validation.name.result'="conflict", "true", "false")
+| table _time Severity DetectionTrack "jsonrpc.request.id" "mcp.protocol.version"
+    "mcp.header.method" "mcp.body.method" "mcp.header.name_hash" "mcp.body.identity_hash"
+    ConflictOnMethod ConflictOnIdentity "mcp.validation.method.result" "mcp.validation.name.result"
+    "mcp.validation.source" "mcp.validation.reason"
+| sort 0 _time
+
+```
+---------------------------------------------------------------------------------------------
+OPTIONAL DIAGNOSTIC SEARCH -- lower confidence, kept as an entirely SEPARATE saved search from
+the primary one above. Fires on missing/malformed routing validation results. Do not union
+this into the primary search's results; it is intentionally a different, lower-severity
+finding (see detections/README.md).
+---------------------------------------------------------------------------------------------
+
+index=mcp_security_audit sourcetype=mcp:audit:json "event.name"="mcp.request.validation"
+    (("mcp.validation.method.result"="missing" OR "mcp.validation.method.result"="malformed")
+     OR ("mcp.validation.name.result"="missing" OR "mcp.validation.name.result"="malformed"))
+| eval Severity="Low"
+| eval DetectionTrack="Track1_RoutingHeaderDiagnostic"
+| table _time Severity DetectionTrack "jsonrpc.request.id" "mcp.protocol.version"
+    "mcp.validation.method.result" "mcp.validation.name.result" "mcp.validation.source"
+    "mcp.validation.reason"
+| sort 0 _time
+```
