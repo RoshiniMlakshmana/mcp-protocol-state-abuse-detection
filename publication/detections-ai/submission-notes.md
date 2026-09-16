@@ -20,9 +20,10 @@
 
 - **What to publish:** the Sigma rule (`detections/sigma/mcp_task_routing_desynchronization.yml`)
   as the primary submission, with the KQL and SPL as implemented counterparts (same single-event
-  filter logic; mechanically verified identical via three independently-written JS predicates in
-  `tests/validation/language_equivalence.test.js` — not native execution for SPL; KQL has since
-  also been natively executed for a representative sample, see below). The diagnostic
+  filter logic. Separately written JS predicates agree on the tested fixtures
+  (`tests/validation/language_equivalence.test.js`) — this does not establish native query
+  equivalence; KQL has since also been natively executed for a representative sample, see
+  below, but SPL has not). The diagnostic
   rule (`mcp_task_routing_missing_header_diagnostic.yml`) should be submitted as a clearly
   separate, Low-severity item — never merged into the primary submission.
 - **Preferred language:** Sigma (single-event, fully expressible, no known limitation).
@@ -40,10 +41,11 @@
 
 - **What to publish:** the Sigma rule
   (`detections/sigma/mcp_cross_principal_task_authorization.yml`) as the primary submission,
-  with KQL and SPL as implemented counterparts (same single-event filter logic; mechanically
-  verified identical via three independently-written JS predicates in
-  `tests/validation/language_equivalence.test.js` — not native execution for SPL; KQL has since
-  also been natively executed for a representative sample, see below).
+  with KQL and SPL as implemented counterparts (same single-event filter logic. Separately
+  written JS predicates agree on the tested fixtures
+  (`tests/validation/language_equivalence.test.js`) — this does not establish native query
+  equivalence; KQL has since also been natively executed for a representative sample, see
+  below, but SPL has not).
 - **Preferred language:** Sigma (single-event, fully expressible, no known limitation).
 - **Known limitations:** depends on trustworthy server-side `mcp.authz.reason` labeling; cannot
   see identity/credential theft upstream of the authorization decision. See
@@ -63,14 +65,16 @@
   explicit deployment-prerequisite warning verbatim (grace periods / open-stream exemptions).
   Do not publish this as a "no known limitations" detection.
 - **Preferred language:** KQL or SPL — both implement the same documented resolution algorithm
-  (SPL is a direct structural port of KQL, not an independent re-derivation). Outcome agreement
-  between them has been verified two ways, and these are NOT the same claim: (1) two
-  independently-coded JS models compared row-for-row across the full stress corpus
-  (`tests/validation/language_equivalence.test.js`), with one intentional, named exception
-  (fixture V14-07 — see below); (2) KQL has since also been natively executed against a real
-  Kusto engine (see "Validation and native-execution disclosures" below) — **SPL has not been
-  natively executed at all.** Do not read "equivalent" as meaning both languages carry the same
-  native-execution confidence.
+  (SPL is a direct structural port of KQL, not an independent re-derivation). Two separate,
+  non-equivalent claims exist here — do not merge them: (1) **JS-model comparison** — two
+  independently-coded JS models of each language's own written semantics compared row-for-row
+  across the full stress corpus (`tests/validation/language_equivalence.test.js`), agreeing
+  except for one intentional, named exception (fixture V14-07 — see below); (2) **native KQL
+  execution** — KQL alone has since been executed against a real Kusto engine (see "Validation
+  and native-execution disclosures" below). **KQL execution alone does not verify agreement with
+  SPL — SPL has not been natively executed at all**, so native execution establishes nothing
+  about cross-language equivalence, only about KQL's own behavior. Do not read "equivalent" as
+  meaning both languages carry the same native-execution confidence.
 - **Track 3 Sigma — treat separately, not as part of the initial priority group.** The Sigma
   correlation rule and its component rules should be submitted, if at all, explicitly labeled
   **"best-effort correlation / hunting content — not semantically equivalent to KQL/SPL"** in

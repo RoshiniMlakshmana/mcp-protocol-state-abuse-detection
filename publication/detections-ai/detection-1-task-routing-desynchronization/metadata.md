@@ -175,17 +175,17 @@ Full file, including the separate diagnostic search: `detections/spl/mcp_task_ro
 - **An alert from this rule does not, by itself, prove compromise or successful unauthorized
   access.** See "False positives" above and `docs/false-positive-analysis.md` before treating a
   hit as confirmed malicious.
-- **KQL and SPL are implemented counterparts of the Sigma logic above**, mechanically verified
-  identical via three independently-written JS predicates comparing outcomes across the full
-  stress corpus (`tests/validation/language_equivalence.test.js`) — this is JS-model comparison,
-  not native execution of either language.
+- **KQL and SPL are implemented counterparts of the Sigma logic above.** Separately written JS
+  predicates agree on the tested fixtures (`tests/validation/language_equivalence.test.js`).
+  This does not establish native query equivalence — SPL has not been natively executed.
 - **Native KQL execution:** 4 representative test cases for this track (A1, A6, A11, A17 —
   synthetic fixtures) were separately, and later, executed against a real Kusto query engine:
   Microsoft's local "Kusto emulator" Docker image
   (`mcr.microsoft.com/azuredataexplorer/kustainer-linux`). **This is native KQL query execution
   only — it is NOT a deployed Microsoft Sentinel analytics rule, workspace, or alert pipeline.**
-  All 4 produced the expected outcome. Full record (part of a 25-fixture, 28-execution run
-  spanning all three tracks): `evidence/native-execution/manifest.jsonl`.
+  All 4 produced the expected outcome. Full record (part of 25 fixture-by-track test cases
+  across 23 unique fixtures, spanning all three tracks, 28 total executions including 3 pre-fix
+  re-runs): `evidence/native-execution/manifest.jsonl`.
 - **Native SPL execution has not been performed for this detection. Zero SPL fixtures were
   executed.** An authorized attempt was made using a local Splunk Free instance (license
   verified genuinely Free, not a trial) but the instance became unresponsive after a required

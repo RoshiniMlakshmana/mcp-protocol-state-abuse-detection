@@ -579,13 +579,16 @@ and `detections/README.md`, "Sigma limitations for Track 3," for the complete an
   Microsoft's local "Kusto emulator" Docker image
   (`mcr.microsoft.com/azuredataexplorer/kustainer-linux`). **This is native KQL query execution
   only — it is NOT a deployed Microsoft Sentinel analytics rule, workspace, scheduled rule, or
-  alert pipeline.** All 18 produced the expected outcome, including `V14-07` — natively
-  confirming the missing-vs-empty divergence above is real, not a documentation artifact. A
-  further 3 executions re-ran the exact PRE-FIX query text (commit `d08bfd6`) for `V11-07`,
-  `V14-04`, and `V14-05` specifically to document, before/after, the row-duplication defect that
-  pass fixed (2 rows → 1 row per notification; the outcome value itself was correct in both).
-  21 native KQL query executions for Track 3 (18 + 3) are part of a 25-fixture, 28-execution run
-  spanning all three tracks — full per-execution record: `evidence/native-execution/manifest.jsonl`.
+  alert pipeline.** All 18 produced the expected outcome. For `V14-07` specifically: **native
+  execution confirmed KQL's expected behavior for V14-07. The SPL model predicts
+  `insufficient_evidence` for the configured extraction assumptions; actual Splunk behavior
+  remains unverified because no SPL fixtures ran.** A further 3 executions re-ran the exact
+  PRE-FIX query text (commit `d08bfd6`) for `V11-07`, `V14-04`, and `V14-05` specifically to
+  document, before/after, the row-duplication defect that pass fixed (2 rows → 1 row per
+  notification; the outcome value itself was correct in both). 21 native KQL query executions
+  for Track 3 (18 + 3) are part of 25 fixture-by-track test cases across 23 unique fixtures,
+  spanning all three tracks, 28 total executions — full per-execution record:
+  `evidence/native-execution/manifest.jsonl`.
 - **Native SPL execution has not been performed for this detection. Zero SPL fixtures were
   executed.** An authorized attempt was made using a local Splunk Free instance (license
   verified genuinely Free, not a trial, via `splunk list licenses`) but the instance became
