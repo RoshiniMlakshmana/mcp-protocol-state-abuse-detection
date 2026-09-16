@@ -44,7 +44,7 @@ requires the same two acceptance flags above, not fewer):
 
 ```
 docker run -d -p 8000:8000 -p 8089:8089 \
-  -v "C:/Users/roshi/Desktop/McpProtocol:/repo:ro" \
+  -v "/path/to/your/checkout/mcp-protocol-state-abuse-detection:/repo:ro" \
   -e "SPLUNK_START_ARGS=--accept-license" \
   -e "SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com" \
   -e "SPLUNK_LICENSE_URI=Free" \
