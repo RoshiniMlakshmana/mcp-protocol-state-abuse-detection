@@ -1,0 +1,125 @@
+[
+  {
+    "case": 1,
+    "description": "Matching header/body: normal operation",
+    "labCase": "normal",
+    "requestedUri": "lab://demo/task-a-alpha",
+    "startedAt": "2026-09-16T20:07:54.057Z",
+    "finishedAt": "2026-09-16T20:07:54.071Z",
+    "outcome": "success",
+    "resultOrError": {
+      "_meta": {
+        "io.modelcontextprotocol/serverInfo": {
+          "name": "track1-lab-real-server",
+          "version": "2.0.0"
+        }
+      },
+      "ttlMs": 0,
+      "cacheScope": "private",
+      "contents": [
+        {
+          "uri": "lab://demo/task-a-alpha",
+          "text": "lab-fixture: fictional Task A (alpha) content"
+        }
+      ]
+    }
+  },
+  {
+    "case": 2,
+    "description": "Conflicting task identifiers: real server validation",
+    "labCase": "conflict",
+    "requestedUri": "lab://demo/task-a-alpha",
+    "startedAt": "2026-09-16T20:07:54.080Z",
+    "finishedAt": "2026-09-16T20:07:54.099Z",
+    "outcome": "error",
+    "resultOrError": {
+      "message": "Bad Request: the request headers and body disagree: the body carries params.uri=\"lab://demo/task-a-alpha\" but the Mcp-Name header names \"lab://demo/task-b-bravo\"",
+      "code": -32020
+    }
+  },
+  {
+    "case": 3,
+    "description": "Same conflict, explicitly weakened lab-only mode",
+    "labCase": "weakened",
+    "requestedUri": "lab://demo/task-a-alpha",
+    "startedAt": "2026-09-16T20:07:54.108Z",
+    "finishedAt": "2026-09-16T20:07:54.127Z",
+    "outcome": "error",
+    "resultOrError": {
+      "message": "Invalid result for resources/read: missing required resultType — servers implementing protocol revision 2026-07-28 MUST include it (the absent-means-complete bridge applies only to earlier-revision servers)",
+      "code": "INVALID_RESULT"
+    }
+  },
+  {
+    "case": 4,
+    "description": "Encoded/decoded representations of the same identity: no false mismatch",
+    "labCase": "encoding",
+    "requestedUri": "lab://demo/task-a-alpha",
+    "startedAt": "2026-09-16T20:07:54.144Z",
+    "finishedAt": "2026-09-16T20:07:54.160Z",
+    "outcome": "success",
+    "resultOrError": {
+      "_meta": {
+        "io.modelcontextprotocol/serverInfo": {
+          "name": "track1-lab-real-server",
+          "version": "2.0.0"
+        }
+      },
+      "ttlMs": 0,
+      "cacheScope": "private",
+      "contents": [
+        {
+          "uri": "lab://demo/task-a-alpha",
+          "text": "lab-fixture: fictional Task A (alpha) content"
+        }
+      ]
+    }
+  },
+  {
+    "case": 5,
+    "description": "Concurrent requests with reused JSON-RPC IDs: no cross-request correlation errors",
+    "labCase": "normal",
+    "startedAt": "2026-09-16T20:07:54.160Z",
+    "finishedAt": "2026-09-16T20:07:54.173Z",
+    "branchA": {
+      "requestedUri": "lab://demo/task-a-alpha",
+      "outcome": "success",
+      "resultOrError": {
+        "_meta": {
+          "io.modelcontextprotocol/serverInfo": {
+            "name": "track1-lab-real-server",
+            "version": "2.0.0"
+          }
+        },
+        "ttlMs": 0,
+        "cacheScope": "private",
+        "contents": [
+          {
+            "uri": "lab://demo/task-a-alpha",
+            "text": "lab-fixture: fictional Task A (alpha) content"
+          }
+        ]
+      }
+    },
+    "branchB": {
+      "requestedUri": "lab://demo/task-b-bravo",
+      "outcome": "success",
+      "resultOrError": {
+        "_meta": {
+          "io.modelcontextprotocol/serverInfo": {
+            "name": "track1-lab-real-server",
+            "version": "2.0.0"
+          }
+        },
+        "ttlMs": 0,
+        "cacheScope": "private",
+        "contents": [
+          {
+            "uri": "lab://demo/task-b-bravo",
+            "text": "lab-fixture: fictional Task B (bravo) content"
+          }
+        ]
+      }
+    }
+  }
+]

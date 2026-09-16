@@ -1,0 +1,77 @@
+{
+  "evaluationMethod": "JS reference-oracle model (tests/detections/oracle.js), NOT a native query engine execution",
+  "splunkRestarted": false,
+  "splunkNote": "not restarted or re-attempted; see evidence/native-execution/splunk-prep/STATUS.md in the main project for the closed-out prior attempt",
+  "perRequest": [
+    {
+      "requestInstanceId": "reqinst_44042268-f1be-4c31-ba9d-085dd0c5f879",
+      "labCase": "encoding",
+      "sourcesPresent": [
+        "collector_derived",
+        "server_native"
+      ],
+      "primaryFires": false,
+      "diagnosticFires": false
+    },
+    {
+      "requestInstanceId": "reqinst_571a091d-9eee-422d-9791-8b087a470c1e",
+      "labCase": "conflict",
+      "sourcesPresent": [
+        "collector_derived",
+        "server_native"
+      ],
+      "primaryFires": true,
+      "diagnosticFires": false
+    },
+    {
+      "requestInstanceId": "reqinst_87ede69a-92d1-4712-a034-7ae1c2e65716",
+      "labCase": "normal",
+      "sourcesPresent": [
+        "collector_derived",
+        "server_native"
+      ],
+      "primaryFires": false,
+      "diagnosticFires": false
+    },
+    {
+      "requestInstanceId": "reqinst_9ce4df78-0194-4a5e-ae0c-57e7060d01a1",
+      "labCase": "normal",
+      "sourcesPresent": [
+        "collector_derived",
+        "server_native"
+      ],
+      "primaryFires": false,
+      "diagnosticFires": false
+    },
+    {
+      "requestInstanceId": "reqinst_b0b08e66-f042-4d74-9cf6-d1f4c94099b9",
+      "labCase": "weakened",
+      "sourcesPresent": [
+        "collector_derived"
+      ],
+      "primaryFires": true,
+      "diagnosticFires": false
+    },
+    {
+      "requestInstanceId": "reqinst_ea93ef23-bfe2-4690-8a69-455e036033be",
+      "labCase": "normal",
+      "sourcesPresent": [
+        "collector_derived",
+        "server_native"
+      ],
+      "primaryFires": false,
+      "diagnosticFires": false
+    }
+  ],
+  "overallPrimaryFires": true,
+  "overallDiagnosticFires": false,
+  "expectedPrimaryFiringCases": [
+    "conflict",
+    "weakened"
+  ],
+  "actualPrimaryFiringCases": [
+    "conflict",
+    "weakened"
+  ],
+  "matchesExpectation": true
+}

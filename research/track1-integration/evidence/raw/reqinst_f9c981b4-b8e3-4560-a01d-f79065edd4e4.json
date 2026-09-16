@@ -1,0 +1,35 @@
+{
+  "requestInstanceId": "reqinst_f9c981b4-b8e3-4560-a01d-f79065edd4e4",
+  "labCase": "weakened",
+  "receivedAt": "2026-09-16T20:07:54.101Z",
+  "gatewayObserved": {
+    "headers": {
+      "mcp-method": "server/discover",
+      "mcp-name": null,
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "body": {
+      "method": "server/discover",
+      "id": "server-discover-probe-1",
+      "paramsUri": null
+    }
+  },
+  "gatewayForwarded": {
+    "targetPort": 4002,
+    "headers": {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+      "mcp-method": "server/discover",
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "transformNote": "none (passthrough); routed to the lab-only weakened stand-in (NOT the real SDK server) because the real server has no documented way to disable its header/body check"
+  },
+  "targetResponse": {
+    "statusCode": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "bodyRaw": "{\"jsonrpc\":\"2.0\",\"id\":\"server-discover-probe-1\",\"result\":{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"resources\":{\"listChanged\":true}},\"resultType\":\"complete\",\"ttlMs\":0,\"cacheScope\":\"private\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"track1-lab-weakened-stand-in\",\"version\":\"2.0.0\"}}}}",
+    "respondedAt": "2026-09-16T20:07:54.107Z"
+  }
+}

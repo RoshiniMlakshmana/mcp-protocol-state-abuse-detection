@@ -1,0 +1,36 @@
+{
+  "requestInstanceId": "reqinst_ea93ef23-bfe2-4690-8a69-455e036033be",
+  "labCase": "normal",
+  "receivedAt": "2026-09-16T20:07:54.169Z",
+  "gatewayObserved": {
+    "headers": {
+      "mcp-method": "resources/read",
+      "mcp-name": "lab://demo/task-b-bravo",
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "body": {
+      "method": "resources/read",
+      "id": 0,
+      "paramsUri": "lab://demo/task-b-bravo"
+    }
+  },
+  "gatewayForwarded": {
+    "targetPort": 4001,
+    "headers": {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+      "mcp-method": "resources/read",
+      "mcp-name": "lab://demo/task-b-bravo",
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "transformNote": "none (passthrough)"
+  },
+  "targetResponse": {
+    "statusCode": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "bodyRaw": "{\"result\":{\"contents\":[{\"uri\":\"lab://demo/task-b-bravo\",\"text\":\"lab-fixture: fictional Task B (bravo) content\"}],\"resultType\":\"complete\",\"ttlMs\":0,\"cacheScope\":\"private\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"track1-lab-real-server\",\"version\":\"2.0.0\"}}},\"jsonrpc\":\"2.0\",\"id\":0}",
+    "respondedAt": "2026-09-16T20:07:54.172Z"
+  }
+}

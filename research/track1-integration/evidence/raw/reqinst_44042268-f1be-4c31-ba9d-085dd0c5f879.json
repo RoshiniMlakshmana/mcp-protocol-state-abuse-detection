@@ -1,0 +1,36 @@
+{
+  "requestInstanceId": "reqinst_44042268-f1be-4c31-ba9d-085dd0c5f879",
+  "labCase": "encoding",
+  "receivedAt": "2026-09-16T20:07:54.156Z",
+  "gatewayObserved": {
+    "headers": {
+      "mcp-method": "resources/read",
+      "mcp-name": "lab://demo/task-a-alpha",
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "body": {
+      "method": "resources/read",
+      "id": 0,
+      "paramsUri": "lab://demo/task-a-alpha"
+    }
+  },
+  "gatewayForwarded": {
+    "targetPort": 4001,
+    "headers": {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+      "mcp-method": "resources/read",
+      "mcp-name": "=?base64?bGFiOi8vZGVtby90YXNrLWEtYWxwaGE=?=",
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "transformNote": "gateway re-encoded mcp-name into the =?base64?...?= sentinel form (same underlying identity, different wire representation)"
+  },
+  "targetResponse": {
+    "statusCode": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "bodyRaw": "{\"result\":{\"contents\":[{\"uri\":\"lab://demo/task-a-alpha\",\"text\":\"lab-fixture: fictional Task A (alpha) content\"}],\"resultType\":\"complete\",\"ttlMs\":0,\"cacheScope\":\"private\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"track1-lab-real-server\",\"version\":\"2.0.0\"}}},\"jsonrpc\":\"2.0\",\"id\":0}",
+    "respondedAt": "2026-09-16T20:07:54.158Z"
+  }
+}

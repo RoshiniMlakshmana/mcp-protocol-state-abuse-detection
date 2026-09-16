@@ -1,0 +1,35 @@
+{
+  "requestInstanceId": "reqinst_97d65edb-4de4-4af6-9eee-2de2ca308e7e",
+  "labCase": "encoding",
+  "receivedAt": "2026-09-16T20:07:54.140Z",
+  "gatewayObserved": {
+    "headers": {
+      "mcp-method": "server/discover",
+      "mcp-name": null,
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "body": {
+      "method": "server/discover",
+      "id": "server-discover-probe-1",
+      "paramsUri": null
+    }
+  },
+  "gatewayForwarded": {
+    "targetPort": 4001,
+    "headers": {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+      "mcp-method": "server/discover",
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "transformNote": "none (passthrough)"
+  },
+  "targetResponse": {
+    "statusCode": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "bodyRaw": "{\"result\":{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"resources\":{\"listChanged\":true}},\"resultType\":\"complete\",\"ttlMs\":0,\"cacheScope\":\"private\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"track1-lab-real-server\",\"version\":\"2.0.0\"}}},\"jsonrpc\":\"2.0\",\"id\":\"server-discover-probe-1\"}",
+    "respondedAt": "2026-09-16T20:07:54.143Z"
+  }
+}

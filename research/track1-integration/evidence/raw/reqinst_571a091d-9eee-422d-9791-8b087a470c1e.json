@@ -1,0 +1,36 @@
+{
+  "requestInstanceId": "reqinst_571a091d-9eee-422d-9791-8b087a470c1e",
+  "labCase": "conflict",
+  "receivedAt": "2026-09-16T20:07:54.093Z",
+  "gatewayObserved": {
+    "headers": {
+      "mcp-method": "resources/read",
+      "mcp-name": "lab://demo/task-a-alpha",
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "body": {
+      "method": "resources/read",
+      "id": 0,
+      "paramsUri": "lab://demo/task-a-alpha"
+    }
+  },
+  "gatewayForwarded": {
+    "targetPort": 4001,
+    "headers": {
+      "content-type": "application/json",
+      "accept": "application/json, text/event-stream",
+      "mcp-method": "resources/read",
+      "mcp-name": "lab://demo/task-b-bravo",
+      "mcp-protocol-version": "2026-07-28"
+    },
+    "transformNote": "gateway rewrote mcp-name to a CONFLICTING identity (\"lab://demo/task-b-bravo\") not matching body params.uri (\"lab://demo/task-a-alpha\")"
+  },
+  "targetResponse": {
+    "statusCode": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "bodyRaw": "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32020,\"message\":\"Bad Request: the request headers and body disagree: the body carries params.uri=\\\"lab://demo/task-a-alpha\\\" but the Mcp-Name header names \\\"lab://demo/task-b-bravo\\\"\",\"data\":{\"mismatch\":{\"header\":\"lab://demo/task-b-bravo\",\"body\":\"the body carries params.uri=\\\"lab://demo/task-a-alpha\\\" but the Mcp-Name header names \\\"lab://demo/task-b-bravo\\\"\"}}},\"id\":0}",
+    "respondedAt": "2026-09-16T20:07:54.096Z"
+  }
+}

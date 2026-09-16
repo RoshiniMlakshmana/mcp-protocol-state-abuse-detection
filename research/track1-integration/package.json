@@ -1,0 +1,11 @@
+{
+  "name": "track1-integration-lab",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Local-only integration lab for Track 1 (Task Routing Header/Body Desynchronization) using the real, pinned MCP TypeScript SDK v2 line. Research evidence for a potential MITRE ATLAS contribution -- not a published detection artifact.",
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0"
+  }
+}
