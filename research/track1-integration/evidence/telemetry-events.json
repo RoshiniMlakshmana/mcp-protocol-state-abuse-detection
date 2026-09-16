@@ -2,6 +2,22 @@
   "events": [
     {
       "event.name": "mcp.request.validation",
+      "requestInstanceId": "reqinst_3dd91a3b-6e8d-40b9-a59c-54052ce2c244",
+      "labCase": "weakened",
+      "mcp.body.method": "resources/read",
+      "jsonrpc.request.id": "0",
+      "mcp.header.method": "resources/read",
+      "mcp.header.name_hash": "h_5c31e99fe7ddb829b93d8e7194b990bb",
+      "mcp.body.identity_hash": "h_4ab6522755bcd223d7cefeef4c869dfd",
+      "mcp.validation.method.result": "match",
+      "mcp.validation.name.result": "conflict",
+      "mcp.validation.result": "invalid",
+      "mcp.validation.source": "collector_derived",
+      "mcp.validation.reason": "collector-recomputed hash comparison: Mcp-Name header identity hash does not equal params.uri identity hash",
+      "error.type": "HeaderMismatch"
+    },
+    {
+      "event.name": "mcp.request.validation",
       "requestInstanceId": "reqinst_44042268-f1be-4c31-ba9d-085dd0c5f879",
       "labCase": "encoding",
       "mcp.body.method": "resources/read",
@@ -13,21 +29,6 @@
       "mcp.validation.name.result": "match",
       "mcp.validation.result": "valid",
       "mcp.validation.source": "collector_derived"
-    },
-    {
-      "event.name": "mcp.request.validation",
-      "requestInstanceId": "reqinst_44042268-f1be-4c31-ba9d-085dd0c5f879",
-      "labCase": "encoding",
-      "mcp.body.method": "resources/read",
-      "jsonrpc.request.id": "0",
-      "mcp.header.method": "resources/read",
-      "mcp.header.name_hash": "h_4ab6522755bcd223d7cefeef4c869dfd",
-      "mcp.body.identity_hash": "h_4ab6522755bcd223d7cefeef4c869dfd",
-      "mcp.validation.source": "server_native",
-      "mcp.validation.method.result": "match",
-      "mcp.validation.name.result": "match",
-      "mcp.validation.result": "valid",
-      "mcp.validation.reason": "real server's own unconditional SEP-2243 pre-dispatch check passed (inferred from a successful result; the SDK does not separately surface a positive verdict)"
     },
     {
       "event.name": "mcp.request.validation",
@@ -77,21 +78,6 @@
     },
     {
       "event.name": "mcp.request.validation",
-      "requestInstanceId": "reqinst_87ede69a-92d1-4712-a034-7ae1c2e65716",
-      "labCase": "normal",
-      "mcp.body.method": "resources/read",
-      "jsonrpc.request.id": "0",
-      "mcp.header.method": "resources/read",
-      "mcp.header.name_hash": "h_4ab6522755bcd223d7cefeef4c869dfd",
-      "mcp.body.identity_hash": "h_4ab6522755bcd223d7cefeef4c869dfd",
-      "mcp.validation.source": "server_native",
-      "mcp.validation.method.result": "match",
-      "mcp.validation.name.result": "match",
-      "mcp.validation.result": "valid",
-      "mcp.validation.reason": "real server's own unconditional SEP-2243 pre-dispatch check passed (inferred from a successful result; the SDK does not separately surface a positive verdict)"
-    },
-    {
-      "event.name": "mcp.request.validation",
       "requestInstanceId": "reqinst_9ce4df78-0194-4a5e-ae0c-57e7060d01a1",
       "labCase": "normal",
       "mcp.body.method": "resources/read",
@@ -106,37 +92,6 @@
     },
     {
       "event.name": "mcp.request.validation",
-      "requestInstanceId": "reqinst_9ce4df78-0194-4a5e-ae0c-57e7060d01a1",
-      "labCase": "normal",
-      "mcp.body.method": "resources/read",
-      "jsonrpc.request.id": "0",
-      "mcp.header.method": "resources/read",
-      "mcp.header.name_hash": "h_4ab6522755bcd223d7cefeef4c869dfd",
-      "mcp.body.identity_hash": "h_4ab6522755bcd223d7cefeef4c869dfd",
-      "mcp.validation.source": "server_native",
-      "mcp.validation.method.result": "match",
-      "mcp.validation.name.result": "match",
-      "mcp.validation.result": "valid",
-      "mcp.validation.reason": "real server's own unconditional SEP-2243 pre-dispatch check passed (inferred from a successful result; the SDK does not separately surface a positive verdict)"
-    },
-    {
-      "event.name": "mcp.request.validation",
-      "requestInstanceId": "reqinst_b0b08e66-f042-4d74-9cf6-d1f4c94099b9",
-      "labCase": "weakened",
-      "mcp.body.method": "resources/read",
-      "jsonrpc.request.id": "0",
-      "mcp.header.method": "resources/read",
-      "mcp.header.name_hash": "h_5c31e99fe7ddb829b93d8e7194b990bb",
-      "mcp.body.identity_hash": "h_4ab6522755bcd223d7cefeef4c869dfd",
-      "mcp.validation.method.result": "match",
-      "mcp.validation.name.result": "conflict",
-      "mcp.validation.result": "invalid",
-      "mcp.validation.source": "collector_derived",
-      "mcp.validation.reason": "collector-recomputed hash comparison: Mcp-Name header identity hash does not equal params.uri identity hash",
-      "error.type": "HeaderMismatch"
-    },
-    {
-      "event.name": "mcp.request.validation",
       "requestInstanceId": "reqinst_ea93ef23-bfe2-4690-8a69-455e036033be",
       "labCase": "normal",
       "mcp.body.method": "resources/read",
@@ -148,30 +103,26 @@
       "mcp.validation.name.result": "match",
       "mcp.validation.result": "valid",
       "mcp.validation.source": "collector_derived"
-    },
-    {
-      "event.name": "mcp.request.validation",
-      "requestInstanceId": "reqinst_ea93ef23-bfe2-4690-8a69-455e036033be",
-      "labCase": "normal",
-      "mcp.body.method": "resources/read",
-      "jsonrpc.request.id": "0",
-      "mcp.header.method": "resources/read",
-      "mcp.header.name_hash": "h_5c31e99fe7ddb829b93d8e7194b990bb",
-      "mcp.body.identity_hash": "h_5c31e99fe7ddb829b93d8e7194b990bb",
-      "mcp.validation.source": "server_native",
-      "mcp.validation.method.result": "match",
-      "mcp.validation.name.result": "match",
-      "mcp.validation.result": "valid",
-      "mcp.validation.reason": "real server's own unconditional SEP-2243 pre-dispatch check passed (inferred from a successful result; the SDK does not separately surface a positive verdict)"
     }
   ],
   "weakenedModeExecutionFacts": [
     {
-      "requestInstanceId": "reqinst_b0b08e66-f042-4d74-9cf6-d1f4c94099b9",
+      "requestInstanceId": "reqinst_3dd91a3b-6e8d-40b9-a59c-54052ce2c244",
       "labCase": "weakened",
       "note": "weakened stand-in has no SEP-2243 check; no server_native validation verdict exists for this request",
-      "conflicting_operation_executed": true,
+      "executed_per_http_response": true,
       "returned_uri": "lab://demo/task-a-alpha",
+      "independent_server_execution_log_entry": {
+        "pid": 46940,
+        "loggedAt": "2026-09-16T20:30:37.011Z",
+        "requestInstanceId": "reqinst_3dd91a3b-6e8d-40b9-a59c-54052ce2c244",
+        "requestedUri": "lab://demo/task-a-alpha",
+        "action": "read_executed",
+        "readCountBefore": 0,
+        "readCountAfter": 1
+      },
+      "independent_evidence_confirms_execution": true,
+      "conflicting_operation_executed": true,
       "header_named_identity_hash": "h_5c31e99fe7ddb829b93d8e7194b990bb",
       "body_requested_identity_hash": "h_4ab6522755bcd223d7cefeef4c869dfd",
       "unauthorized_access_proven": "outcome_unknown",

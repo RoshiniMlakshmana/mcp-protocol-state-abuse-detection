@@ -13,17 +13,20 @@
  *
  * Two independent verdict sources per applicable request, per telemetry/schema.md's
  * `mcp.validation.source` field:
- *  - `server_native`: the REAL server's (@modelcontextprotocol/server@2.0.0) own SEP-2243 check,
- *    read directly off its HTTP response (a -32020 error, or a successful result implying its
- *    unconditional pre-dispatch check passed). Only emitted for requests routed to the real
- *    server -- the weakened stand-in performs NO such check by design (that is its entire
- *    purpose), so fabricating a server_native verdict for it would misrepresent evidence that
- *    does not exist. This is the higher-trust source per schema guidance.
+ *  - `server_native`: emitted ONLY when the real server's (@modelcontextprotocol/server@2.0.0)
+ *    own validation path actually produced a decision this lab can read back verbatim -- in
+ *    practice, its -32020 HeaderMismatch error object. A 200 success is deliberately NOT treated
+ *    as an observed server_native verdict: the SDK never separately surfaces a positive
+ *    "validation passed" signal, so inferring "match" from "no error was returned" would make
+ *    THIS SCRIPT the source of that verdict, which is collector_derived by definition even though
+ *    the traffic came from a real server. See serverNativeVerdictIfEmitted's own comment. Never
+ *    emitted for the weakened stand-in, which performs no such check by design.
  *  - `collector_derived`: independently recomputed here by hashing the header-side identity
  *    (decoding the Base64 sentinel form first, per schema) and the body-side identity with the
- *    same HMAC scheme (tools/harness/lib/hash.js) and comparing for equality -- emitted for every
- *    applicable request, including ones routed to the weakened stand-in, since this comparison
- *    needs no cooperation from the target at all.
+ *    same HMAC scheme (tools/harness/lib/hash.js) and comparing for equality -- emitted for EVERY
+ *    applicable request (including successes and requests routed to the weakened stand-in), since
+ *    this comparison needs no cooperation from the target at all -- it is derived purely from the
+ *    raw header/body values this lab itself sent.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -31,8 +34,29 @@ const { hmacHash } = require('../../../tools/harness/lib/hash');
 
 const RAW_DIR = path.join(__dirname, '..', 'evidence', 'raw');
 const OUT_FILE = path.join(__dirname, '..', 'evidence', 'telemetry-events.json');
+const WEAKENED_EXECUTION_LOG = path.join(__dirname, '..', 'evidence', 'weakened-server-execution-log.jsonl');
 
 const REAL_SERVER_PORT = Number(process.env.TRACK1_LAB_SERVER_PORT || 4001);
+
+/** Independent execution-log entries written by weakened-server.js itself, keyed by the
+ * gateway-issued requestInstanceId it received via X-Lab-Request-Instance -- see gateway.js and
+ * weakened-server.js. Used to corroborate (or fail to corroborate) execution independent of the
+ * HTTP response the gateway proxied back. */
+function loadWeakenedExecutionLog() {
+  const map = new Map();
+  let raw;
+  try {
+    raw = fs.readFileSync(WEAKENED_EXECUTION_LOG, 'utf8');
+  } catch {
+    return map;
+  }
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    const entry = JSON.parse(line);
+    if (entry.requestInstanceId) map.set(entry.requestInstanceId, entry);
+  }
+  return map;
+}
 
 const SENTINEL_RE = /^=\?base64\?([A-Za-z0-9+/=]*)\?=$/;
 function decodeSentinel(value) {
@@ -91,54 +115,45 @@ function collectorDerivedEvent(record, headerIdentityHash, bodyIdentityHash) {
   };
 }
 
-function serverNativeEventForRealServer(record, headerIdentityHash, bodyIdentityHash) {
-  const bodyMethod = record.gatewayObserved.body.method;
+/**
+ * Returns a `server_native` event ONLY when the real server's own validation path explicitly
+ * emitted a decision we can read back verbatim -- i.e. its -32020 HeaderMismatch error object,
+ * composed by `validateStandardRequestHeaders` itself and returned as the response. That is a
+ * verdict the server's validation path actually produced.
+ *
+ * A 200 success response is NOT such a verdict: the server's SDK does not separately surface a
+ * positive "validation passed" signal anywhere this lab can observe -- a success only means no
+ * rejection was returned. Treating "no error" as an observed `server_native: match` would mean
+ * THIS SCRIPT is the one deriving a verdict from captured traffic, which is collector_derived by
+ * definition, even though the traffic happened to originate from a real server. So on success (or
+ * any other non-rejection shape), this returns null: the collector_derived event (computed
+ * separately, directly from the raw header/body values this lab itself sent) is the only verdict
+ * emitted for that request, and it is labeled accordingly.
+ */
+function serverNativeVerdictIfEmitted(record, headerIdentityHash, bodyIdentityHash) {
   const parsed = record.targetResponse && safeParseJson(record.targetResponse.bodyRaw);
-  const base = {
+  if (!(parsed && parsed.error && parsed.error.code === -32020)) return null;
+  return {
     'event.name': 'mcp.request.validation',
     requestInstanceId: record.requestInstanceId,
     labCase: record.labCase,
-    'mcp.body.method': bodyMethod,
+    'mcp.body.method': record.gatewayObserved.body.method,
     'jsonrpc.request.id': String(record.gatewayObserved.body.id),
     'mcp.header.method': record.gatewayForwarded.headers['mcp-method'] ?? null,
     'mcp.header.name_hash': headerIdentityHash,
     'mcp.body.identity_hash': bodyIdentityHash,
     'mcp.validation.source': 'server_native',
-  };
-  if (parsed && parsed.error && parsed.error.code === -32020) {
-    return {
-      ...base,
-      'mcp.validation.method.result': 'match',
-      'mcp.validation.name.result': 'conflict',
-      'mcp.validation.result': 'invalid',
-      'mcp.validation.reason': parsed.error.message,
-      'error.type': 'HeaderMismatch',
-    };
-  }
-  if (record.targetResponse && record.targetResponse.statusCode === 200 && parsed && parsed.result) {
-    return {
-      ...base,
-      'mcp.validation.method.result': 'match',
-      'mcp.validation.name.result': 'match',
-      'mcp.validation.result': 'valid',
-      'mcp.validation.reason':
-        "real server's own unconditional SEP-2243 pre-dispatch check passed (inferred from a successful result; the SDK does not separately surface a positive verdict)",
-    };
-  }
-  // Anything else (network error, unexpected status/shape) is genuinely unclassifiable from the
-  // server's own response -- do not guess a verdict.
-  return {
-    ...base,
-    'mcp.validation.method.result': 'malformed',
-    'mcp.validation.name.result': 'malformed',
+    'mcp.validation.method.result': 'match',
+    'mcp.validation.name.result': 'conflict',
     'mcp.validation.result': 'invalid',
-    'mcp.validation.reason': 'server_native verdict could not be determined from the target response (unexpected shape/status)',
-    'error.type': 'UnclassifiedResponse',
+    'mcp.validation.reason': parsed.error.message,
+    'error.type': 'HeaderMismatch',
   };
 }
 
 function main() {
   const records = loadRawRecords().filter((r) => r.gatewayObserved.body.method === 'resources/read');
+  const executionLogByInstanceId = loadWeakenedExecutionLog();
   const events = [];
   const executionFacts = [];
 
@@ -152,23 +167,33 @@ function main() {
 
     const routedToRealServer = record.gatewayForwarded.targetPort === REAL_SERVER_PORT;
     if (routedToRealServer) {
-      events.push(serverNativeEventForRealServer(record, headerIdentityHash, bodyIdentityHash));
+      const serverNativeEvent = serverNativeVerdictIfEmitted(record, headerIdentityHash, bodyIdentityHash);
+      if (serverNativeEvent) events.push(serverNativeEvent);
+      // else: success case -- no explicit server-emitted verdict exists; collector_derived above
+      // is the only event for this request. See serverNativeVerdictIfEmitted's own comment.
     } else {
       // Weakened stand-in: no server_native verdict exists to report (see file header). Record,
       // as a SEPARATE fact (not a telemetry-contract validation event), only what the raw HTTP
-      // exchange actually shows about whether the conflicting operation executed -- per
-      // instruction, this alone does not prove unauthorized access, and no separate authorization
-      // evidence was collected in this lab, so any access-proof question stays outcome_unknown.
+      // exchange actually shows about whether the conflicting operation executed -- corroborated,
+      // where available, by the target's OWN independent execution log/state file (written as a
+      // side effect of handling the request, out-of-band from the HTTP response) -- per
+      // instruction, none of this alone establishes unauthorized access, and no separate
+      // authorization evidence was collected in this lab, so that question stays outcome_unknown.
       const parsed = record.targetResponse && safeParseJson(record.targetResponse.bodyRaw);
-      const executed = Boolean(
+      const executedPerHttpResponse = Boolean(
         record.targetResponse && record.targetResponse.statusCode === 200 && parsed && parsed.result && parsed.result.contents
       );
+      const independentLogEntry = executionLogByInstanceId.get(record.requestInstanceId) || null;
       executionFacts.push({
         requestInstanceId: record.requestInstanceId,
         labCase: record.labCase,
         note: 'weakened stand-in has no SEP-2243 check; no server_native validation verdict exists for this request',
-        conflicting_operation_executed: executed,
-        returned_uri: executed ? parsed.result.contents[0]?.uri ?? null : null,
+        executed_per_http_response: executedPerHttpResponse,
+        returned_uri: executedPerHttpResponse ? parsed.result.contents[0]?.uri ?? null : null,
+        independent_server_execution_log_entry: independentLogEntry,
+        independent_evidence_confirms_execution: independentLogEntry ? independentLogEntry.action === 'read_executed' : null,
+        conflicting_operation_executed:
+          independentLogEntry !== null ? independentLogEntry.action === 'read_executed' : executedPerHttpResponse,
         header_named_identity_hash: headerIdentityHash,
         body_requested_identity_hash: bodyIdentityHash,
         unauthorized_access_proven: 'outcome_unknown',

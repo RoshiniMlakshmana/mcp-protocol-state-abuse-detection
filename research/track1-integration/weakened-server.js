@@ -9,8 +9,7 @@
  * @modelcontextprotocol/server@2.0.0 has NO documented or discoverable option to disable its
  * SEP-2243 standard-header validation -- confirmed by reading the shipped dist/ source before
  * writing this file: `validateStandardRequestHeaders` is called unconditionally from the
- * package's internal HTTP entry point (`serveModern`), with no exposed toggle. See
- * evidence/case3-weakened-mode-notes.md for that verification.
+ * package's internal HTTP entry point (`serveModern`), with no exposed toggle.
  *
  * This file does NOT import or exercise @modelcontextprotocol/server or @modelcontextprotocol/client
  * in any way for its own request handling -- it is plain node:http with a hand-parsed JSON-RPC
@@ -21,6 +20,8 @@
  * unauthorized access -- only whether request processing proceeds without SEP-2243 enforcement.
  */
 const { createServer } = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const PORT = Number(process.env.TRACK1_LAB_WEAKENED_PORT || 4002);
 
@@ -28,6 +29,44 @@ const RESOURCES = {
   'lab://demo/task-a-alpha': 'lab-fixture: fictional Task A (alpha) content',
   'lab://demo/task-b-bravo': 'lab-fixture: fictional Task B (bravo) content',
 };
+
+// Independent, out-of-band execution evidence: a durable, on-disk record written by THIS
+// process as a side effect of actually serving a resource read, separate from the HTTP response
+// the gateway proxies back to the client. A response body alone only proves what bytes crossed
+// the wire; this proves the server-side process itself took an action, correlated to the
+// gateway-issued request-instance ID (forwarded via X-Lab-Request-Instance -- see gateway.js).
+//
+// Two forms, both checked by verify-case3.js:
+//  1. An append-only execution log (one durable line per request, written before the response is
+//     sent, so it exists independent of whether the response is ever successfully delivered).
+//  2. An observable harmless state change: a per-resource read counter, persisted to disk and
+//     re-read+incremented+rewritten synchronously for every successful read, so its value before
+//     and after a specific request can be diffed.
+const EVIDENCE_DIR = path.join(__dirname, 'evidence');
+const EXECUTION_LOG_PATH = path.join(EVIDENCE_DIR, 'weakened-server-execution-log.jsonl');
+const STATE_PATH = path.join(EVIDENCE_DIR, 'weakened-server-state.json');
+fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
+
+function readState() {
+  try {
+    return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+  } catch {
+    return { readCounts: {} };
+  }
+}
+
+function recordExecution(entry) {
+  fs.appendFileSync(EXECUTION_LOG_PATH, JSON.stringify({ pid: process.pid, loggedAt: new Date().toISOString(), ...entry }) + '\n', 'utf8');
+}
+
+function recordStateChangingRead(uri) {
+  const state = readState();
+  const before = state.readCounts[uri] || 0;
+  const after = before + 1;
+  state.readCounts[uri] = after;
+  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
+  return { before, after };
+}
 
 const httpServer = createServer((req, res) => {
   let raw = '';
@@ -86,14 +125,21 @@ const httpServer = createServer((req, res) => {
 
     // NO header/body consistency check here -- that is the entire point of this file.
     if (body.method === 'resources/read') {
+      const requestInstanceId = req.headers['x-lab-request-instance'] || null;
       const uri = body.params?.uri;
       const text = RESOURCES[uri];
-      res.writeHead(200, { 'Content-Type': 'application/json' });
       if (text === undefined) {
+        recordExecution({ requestInstanceId, requestedUri: uri, action: 'read_failed_not_found' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32002, message: 'Resource not found', data: { uri } } }));
-      } else {
-        res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { contents: [{ uri, text }] } }));
+        return;
       }
+      // The state-changing action (the counter read+increment+write) happens BEFORE the response
+      // is written, so the on-disk record exists independent of the response ever being sent.
+      const { before, after } = recordStateChangingRead(uri);
+      recordExecution({ requestInstanceId, requestedUri: uri, action: 'read_executed', readCountBefore: before, readCountAfter: after });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { contents: [{ uri, text }] } }));
       return;
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });

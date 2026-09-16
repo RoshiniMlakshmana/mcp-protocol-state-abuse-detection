@@ -1,0 +1,42 @@
+{
+  "requestInstanceId": "reqinst_3dd91a3b-6e8d-40b9-a59c-54052ce2c244",
+  "correlation": "all three sources below are keyed to this SAME gateway-issued request-instance ID, forwarded to the weakened stand-in via X-Lab-Request-Instance",
+  "source1_gateway_raw_wire_record": {
+    "path": "evidence/raw/reqinst_3dd91a3b-6e8d-40b9-a59c-54052ce2c244.json",
+    "headerNamedIdentity": "lab://demo/task-b-bravo",
+    "bodyRequestedIdentity": "lab://demo/task-a-alpha",
+    "targetResponseStatus": 200,
+    "targetResponseBody": "{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"contents\":[{\"uri\":\"lab://demo/task-a-alpha\",\"text\":\"lab-fixture: fictional Task A (alpha) content\"}]}}"
+  },
+  "source2_independent_server_execution_log": {
+    "path": "evidence/weakened-server-execution-log.jsonl",
+    "found": true,
+    "entry": {
+      "pid": 46940,
+      "loggedAt": "2026-09-16T20:30:37.011Z",
+      "requestInstanceId": "reqinst_3dd91a3b-6e8d-40b9-a59c-54052ce2c244",
+      "requestedUri": "lab://demo/task-a-alpha",
+      "action": "read_executed",
+      "readCountBefore": 0,
+      "readCountAfter": 1
+    }
+  },
+  "source3_independent_server_state_file": {
+    "path": "evidence/weakened-server-state.json",
+    "readCountForRequestedUriAfterThisRun": 1,
+    "readCountBeforeThisRequestPerLogEntry": 0,
+    "readCountAfterThisRequestPerLogEntry": 1,
+    "stateChangeObserved": true
+  },
+  "findings": {
+    "mismatch_observed": true,
+    "server_rejected_or_operation_executed": "executed",
+    "client_accepted_or_rejected_the_response": "rejected",
+    "client_outcome_detail": {
+      "message": "Invalid result for resources/read: missing required resultType — servers implementing protocol revision 2026-07-28 MUST include it (the absent-means-complete bridge applies only to earlier-revision servers)",
+      "code": "INVALID_RESULT"
+    },
+    "authorization_outcome": "outcome_unknown",
+    "authorization_outcome_note": "execution is proven (independent server-side log + state-change evidence, not response body/status alone) and is NOT itself labeled unknown; whether the read was AUTHORIZED is unknown because no separate authorization evidence was collected in this lab"
+  }
+}

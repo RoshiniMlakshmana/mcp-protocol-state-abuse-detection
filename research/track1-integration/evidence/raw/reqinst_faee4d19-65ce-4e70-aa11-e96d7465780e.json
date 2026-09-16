@@ -1,7 +1,7 @@
 {
-  "requestInstanceId": "reqinst_f9c981b4-b8e3-4560-a01d-f79065edd4e4",
+  "requestInstanceId": "reqinst_faee4d19-65ce-4e70-aa11-e96d7465780e",
   "labCase": "weakened",
-  "receivedAt": "2026-09-16T20:07:54.101Z",
+  "receivedAt": "2026-09-16T20:30:36.961Z",
   "gatewayObserved": {
     "headers": {
       "mcp-method": "server/discover",
@@ -19,6 +19,7 @@
     "headers": {
       "content-type": "application/json",
       "accept": "application/json, text/event-stream",
+      "x-lab-request-instance": "reqinst_faee4d19-65ce-4e70-aa11-e96d7465780e",
       "mcp-method": "server/discover",
       "mcp-protocol-version": "2026-07-28"
     },
@@ -30,6 +31,6 @@
       "content-type": "application/json"
     },
     "bodyRaw": "{\"jsonrpc\":\"2.0\",\"id\":\"server-discover-probe-1\",\"result\":{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{\"resources\":{\"listChanged\":true}},\"resultType\":\"complete\",\"ttlMs\":0,\"cacheScope\":\"private\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"track1-lab-weakened-stand-in\",\"version\":\"2.0.0\"}}}}",
-    "respondedAt": "2026-09-16T20:07:54.107Z"
+    "respondedAt": "2026-09-16T20:30:36.979Z"
   }
 }

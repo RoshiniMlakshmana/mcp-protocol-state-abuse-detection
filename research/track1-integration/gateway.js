@@ -112,6 +112,11 @@ const httpServer = http.createServer(async (req, res) => {
   const outgoingHeaders = {
     'content-type': req.headers['content-type'] || 'application/json',
     accept: req.headers['accept'] || 'application/json, text/event-stream',
+    // Lets a target process independently log its own execution against this same
+    // correlation ID, out-of-band from the HTTP response the gateway proxies back -- see
+    // weakened-server.js's execution log. A lab orchestration signal only, like X-Lab-Case;
+    // not an MCP header, stripped from consideration before any telemetry/audit derivation.
+    'x-lab-request-instance': instanceId,
   };
   if (observedHeaders['mcp-method']) outgoingHeaders['mcp-method'] = observedHeaders['mcp-method'];
   if (outgoingMcpName) outgoingHeaders['mcp-name'] = outgoingMcpName;
