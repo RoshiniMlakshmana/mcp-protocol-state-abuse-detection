@@ -934,6 +934,33 @@ aligned to the verified KQL fix by direct structural parallel and careful manual
 confidence level as the KQL fix, which was proven against a real engine. This gap is named, not
 hidden.
 
+### Addendum: a subsequent, authorized SPL native-execution attempt was made and blocked
+
+After this document's part 5 was written, a separate session obtained explicit authorization to
+run local Splunk under its Free license and attempt exactly this deferred item. **The attempt
+did not complete; SPL remains unverified against a live engine, exactly as stated above.**
+Summary (full account: `evidence/native-execution/splunk-prep/STATUS.md`):
+
+- Splunk Free was pulled, started, and license-verified (`status:VALID`, no expiration, not a
+  trial), and one harmless test search succeeded via the Splunk CLI — confirming the instance
+  itself was genuinely usable, and separately confirming a real, structural Free-tier constraint
+  (Free disables authenticated remote/REST management by design, unrelated to trial/payment
+  status; worked around via CLI-based execution instead of REST).
+- Loading the required `props.conf` (`KV_MODE=json`, for the same dotted-field extraction every
+  `*.spl` query assumes) needed a Splunk restart. That restart caused Splunk's own internal
+  logging to record a password fragment on two separate occasions — a structural behavior of
+  this Docker image's restart path, not an artifact of how the restart was invoked.
+- After the second such restart, the instance did not return to a responsive state within a
+  bounded 5-minute check. It was stopped (not removed, not recreated) without a third attempt.
+  **Zero SPL detection queries were ever executed; zero fixtures were ingested.** The root cause
+  of the unresponsiveness is not confirmed.
+- The affected container and its credential must not be reused. A future attempt requires a
+  fresh container and a freshly generated password.
+
+This does not change any claim elsewhere in this document: SPL is verified by code review and
+structural parallel to KQL only, never by native execution, and the full corpus and any
+Sentinel/Splunk deployment remain out of scope for what has actually been run.
+
 ## Remaining risks (unresolved, explicitly not decided in this block)
 
 1. **RESOLVED in "Track 3 remediation pass, part 2" above.** Track 3's principal-only join for

@@ -27,9 +27,13 @@ before deploying anything here.
   `evidence/native-execution/`. This is **native KQL query execution only** — it is **not** a
   Microsoft Sentinel deployment: no workspace, no scheduled analytics rule, no incident/alert
   pipeline, no Log Analytics ingestion mapping, no RBAC. (2) **Native execution against the full
-  106-scenario corpus, against SPL (no Splunk instance was started), and against a real Sentinel
-  workspace/Splunk instance all remain not performed.** SPL was hand-written and aligned to the
-  verified KQL fixes by direct structural parallel, never executed against live Splunk. (3)
+  106-scenario corpus and against SPL both remain not performed.** A subsequent, authorized
+  attempt to natively validate SPL (local Splunk Free, license-verified) became unresponsive
+  after a required configuration restart before any fixture could be tested — zero SPL detection
+  queries were executed; see `evidence/native-execution/splunk-prep/STATUS.md` for the precise
+  account. SPL remains verified only by hand-review and direct structural parallel to the
+  verified KQL fixes, never executed against live Splunk. A real Sentinel workspace/Splunk
+  deployment also remains not performed. (3)
   **Official Sigma CLI / pySigma conversion validation has not been performed** (Python, required
   for the official Sigma tooling, was unavailable in the development environment) — Sigma was
   hand-reviewed against the documented specification only. See `docs/validation-report.md`,
@@ -317,7 +321,10 @@ contract, not something a code change here can close).
   against SPL at all also remains pending.** A fifth Track 3 remediation pass DID natively
   execute the real KQL query against a real Kusto engine (Microsoft's local, free, perpetual
   Kusto emulator — no account/trial) for 25 representative fixtures — see "Native execution
-  status" above and `evidence/native-execution/`. Everything else (the remaining ~81 corpus
+  status" above and `evidence/native-execution/`. A separate, authorized attempt at native SPL
+  execution (local Splunk Free, license-verified) became unresponsive after a required
+  configuration restart before any fixture ran — zero SPL queries were executed; see
+  `evidence/native-execution/splunk-prep/STATUS.md`. Everything else (the remaining ~81 corpus
   scenarios, all of SPL, and any Sentinel/Splunk deployment) was verified only via the JS
   models/oracle described above, never against a live backend.
 

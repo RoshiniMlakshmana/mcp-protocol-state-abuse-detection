@@ -6,10 +6,11 @@ Track 3, plus the fix it drove. **Scope, read this before the data below**: this
 no Sentinel workspace, no scheduled analytics rule, no incident/alert pipeline, no Log
 Analytics ingestion mapping, no RBAC, no watchlist. It exercises the exact, unmodified query
 text against a real Kusto query engine with hand-built synthetic input — nothing more, nothing
-less. **SPL was not natively executed** (no local Splunk instance was started this pass — see
-`README.md` "Native execution" and `docs/validation-report.md`, "Track 3 remediation pass, part
-5"); the SPL fix was aligned by direct code parallel to the KQL fix, not independently verified
-against a live Splunk engine.
+less. **SPL was not natively executed.** A subsequent, separate attempt was authorized and made
+(Splunk Free, pulled and license-verified) but became unresponsive after a required
+configuration restart before any fixture could be tested — zero SPL detection queries were run.
+See `splunk-prep/STATUS.md` for the full, precise account. The SPL fix remains aligned by direct
+code parallel to the KQL fix only, not independently verified against a live Splunk engine.
 
 ## Engine identity
 

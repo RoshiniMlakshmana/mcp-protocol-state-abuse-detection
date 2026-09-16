@@ -1,8 +1,12 @@
-# Native SPL validation — prepared, execution blocked pending a license/terms decision
+# Native SPL validation — prepared and attempted; execution blocked
 
-Everything possible without a running Splunk instance has been prepared and is ready to run the
-moment that decision is made. **Splunk has not been started, pulled, or licensed.** No product
-terms have been accepted.
+**See `STATUS.md` for the current, authoritative account.** The license/terms decision described
+below WAS subsequently authorized by the user, and a real attempt WAS made: Splunk Free was
+pulled, licensed, and verified, and a harmless search succeeded — but the instance became
+unresponsive after a required configuration restart and was stopped before any fixture could be
+tested. Zero SPL detection queries were executed. `STATUS.md` documents this precisely; the rest
+of this file is kept as-is below for the original preparation record (still accurate as
+preparation, not as an execution outcome).
 
 ## The exact blocker
 
