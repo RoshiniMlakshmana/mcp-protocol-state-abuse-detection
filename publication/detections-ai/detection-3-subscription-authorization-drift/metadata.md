@@ -426,10 +426,12 @@ named KQL/SPL disagreement in `tests/validation/language_equivalence.test.js` (f
 not silently folded into a "fully equivalent" claim.
 
 **Note on the ASCII-quote `strptime()` format string above:** it assumes ISO-8601 with
-millisecond precision (`2026-09-05T10:10:00.000Z`). This has not been executed against a live
-Splunk instance in this project (no Splunk instance was available during development — see
-`detections/README.md`, "validation tooling used") — validate it against your own ingested
-field format before relying on it.
+millisecond precision (`2026-09-05T10:10:00.000Z`). This SPL query has not been successfully
+executed against a live Splunk instance. An authorized attempt was made (Splunk Free, license
+verified as genuinely Free — not a trial) but the instance became unresponsive after a required
+configuration restart before any query could be tested; zero SPL detection queries were
+executed. See `evidence/native-execution/splunk-prep/STATUS.md` for the full account. Validate
+this format string against your own ingested field format before relying on it.
 
 A separate, clearly-labeled `detected_at`-only informational note (never promoted into the query
 above at all) is in the full file's closing comment block:
