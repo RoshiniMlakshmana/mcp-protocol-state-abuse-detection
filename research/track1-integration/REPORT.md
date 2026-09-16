@@ -50,6 +50,30 @@ script here reaches it only via the gateway, on loopback) that is not exploitabl
 authentication to a throwaway local test server would be unnecessary code for a property no
 demonstrated flow depends on; it is noted here rather than silently left unstated.
 
+## ATLAS mitigation source provenance (mirror correction)
+
+`atlas-contribution-draft.md` quotes MITRE ATLAS mitigations AML.M0033 and AML.M0024. Two lookups
+were made, kept here rather than in the submission-facing draft:
+
+1. **First attempt (superseded, not first-party):** an AI-summarized `WebFetch` of a third-party
+   MISP-galaxy mirror (`github.com/MISP/misp-galaxy`, `clusters/mitre-atlas-course-of-action.json`)
+   returned a paraphrased, incorrect description for AML.M0033 -- caught only by separately fetching
+   the mirror's raw JSON directly (`raw.githubusercontent.com/MISP/misp-galaxy/main/...`) and
+   parsing it, rather than trusting the AI summary. That raw-JSON re-check matched MITRE's own text
+   for AML.M0033, but was still a third-party mirror, not MITRE's own dataset, and carried no
+   pinned commit or hash.
+2. **Final, current source (first-party, hash-verified):** MITRE's own `atlas-data` repository,
+   fetched directly at a pinned commit: `https://raw.githubusercontent.com/mitre-atlas/atlas-data/3259f388d19cbcca11bacf12a0ef97f4198f711b/dist/v6/ATLAS-2026.09.yaml`
+   -- release `2026.09`, commit `3259f388d19cbcca11bacf12a0ef97f4198f711b`. SHA-256 of the fetched
+   file, computed independently twice (`sha256sum` via `curl`, and Node's `crypto` module while
+   parsing the YAML with `js-yaml`): `935efa93e28294432d3e2f537eb94991ef8d1f8c58341cd360ea3321ddb66688`
+   -- matches the value supplied for this check. Retrieved 2026-09-16.
+
+Comparing this primary source against the draft's quotations found one real discrepancy: the
+AML.M0024 quote silently truncated mid-sentence ("...security threats.") without an ellipsis,
+omitting "and mitigate impacts" that the actual MITRE sentence continues with. Corrected in the
+draft. AML.M0033's quote was already accurate under both sources.
+
 ## Pinned versions / environment
 
 - `@modelcontextprotocol/client@2.0.0`, `@modelcontextprotocol/server@2.0.0`,
