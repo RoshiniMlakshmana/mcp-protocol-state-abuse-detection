@@ -19,6 +19,37 @@ script made (from a successful response) as `server_native`, when no such verdic
 emitted by the server. Both are corrected below and in the code; superseded claims are not left
 standing.
 
+## Request-instance ID integrity (verified for the ATLAS contribution package)
+
+A second review asked three specific questions about `lib/correlate.js`'s request-instance ID,
+since it is the correlation key the whole evidence chain (including case 3's independent execution
+proof, above) depends on. No defect was found; no code changes were needed. Verified by reading
+the code and by one live, throwaway probe (not part of the 5 bounded cases, discarded afterward --
+`evidence/` is unchanged by it):
+
+1. **The gateway generates the ID itself.** `gateway.js` calls `newRequestInstanceId()`
+   unconditionally on every inbound request (`const instanceId = newRequestInstanceId();`), before
+   it even reads the request body. `newRequestInstanceId()` (`lib/correlate.js`) takes no
+   arguments and is pure `'reqinst_' + crypto.randomUUID()` -- there is no code path anywhere in
+   `gateway.js` that reads an inbound header or body value to construct or influence this ID.
+2. **A client-supplied value cannot override it.** Sent a request directly to the gateway with a
+   forged `X-Lab-Request-Instance: reqinst_FORGED-ATTACKER-CHOSEN-VALUE` header (case `weakened`,
+   so it would reach the execution log too). The forged string appears nowhere in the result: the
+   gateway's own raw record used a freshly generated UUID for both its `requestInstanceId` field
+   and the `x-lab-request-instance` value it forwarded to the target -- `gateway.js` only ever
+   *writes* that outbound header from its own `instanceId`; it never reads one in from the
+   incoming request.
+3. **Execution records use the gateway-issued value.** The weakened stand-in's execution-log entry
+   for that same probe carried the gateway's freshly generated ID, not the forged one, confirming
+   `weakened-server.js` received and logged exactly the value the gateway issued.
+
+One residual, explicitly out-of-scope note: `weakened-server.js` trusts whatever
+`X-Lab-Request-Instance` value arrives on requests it receives -- there is no signature or shared
+secret binding that header to the gateway specifically. Within this lab's actual data flow (every
+script here reaches it only via the gateway, on loopback) that is not exploitable, and adding
+authentication to a throwaway local test server would be unnecessary code for a property no
+demonstrated flow depends on; it is noted here rather than silently left unstated.
+
 ## Pinned versions / environment
 
 - `@modelcontextprotocol/client@2.0.0`, `@modelcontextprotocol/server@2.0.0`,
